@@ -1,0 +1,6 @@
+#+TITLE: chatgpt_userscript/PE
+
+* _
+#+BEGIN_SRC markdown
+open chrome using mcp and wait for me to sign in to chatgpt
+#+END_SRC
