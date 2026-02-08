@@ -1,21 +1,20 @@
 #+TITLE: ChatGPT Userscript
 
 * What this is
-`basic.js` is a userscript for `https://chatgpt.com/*` that helps with:
-- reliable prompt insertion and sending
+=basic.js= is a userscript for =https://chatgpt.com/*= that helps with:
 - repeated message sending with delay
 - bulk clicking image download buttons
 
 * Install
 1. Install a userscript manager (Tampermonkey/Violentmonkey).
-2. Create a new script and paste `basic.js`.
-3. Open `https://chatgpt.com/`.
+2. Create a new script and paste =basic.js=.
+3. Open =https://chatgpt.com/=.
 
 * Quick use (browser console)
-The script exposes helpers on `window`:
-- `sendMessage(msg, checkInterval, sleep, timeout)`
-- `sendMessageRepeatedly(msg, n, sleep, newChatP)`
-- `clickDallEDownloadButtons()`
+The script exposes helpers on =window=:
+- =sendMessage(msg, checkInterval, sleep, timeout)=
+- =sendMessageRepeatedly(msg, n, sleep, newChatP)=
+- =clickDallEDownloadButtons()=
 
 Examples:
 #+begin_src js
@@ -25,10 +24,31 @@ clickDallEDownloadButtons();
 #+end_src
 
 * Notes
-- `sleep` in `sendMessageRepeatedly` is in seconds.
-- `timeout` in `sendMessage` is in seconds.
+- =sleep= in =sendMessageRepeatedly= is in seconds.
+- =timeout= in =sendMessage= is in seconds.
 - Download helper targets current image download button attributes.
 
 * Maintenance
 For adapting to upstream ChatGPT UI changes with MCP, see:
-`docs/update_userscript.md`
+=docs/update_userscript.md=
+
+** [[id:e8a38273-a5de-4a50-bbab-ada9fcdf01f8][Connecting to a running Chrome instance]]
+The [[./.codex/config.toml][MCP config]] requires Chrome to be running with the remote debugging port set to 9222. It also mandates the installation of both NVM and Node v22.
+
+*macOS*
+
+#+begin_src :eval never
+/Applications/Google\ Chrome.app/Contents/MacOS/Google\ Chrome --remote-debugging-port=9222 --user-data-dir=/tmp/chrome-profile-stable
+#+end_src
+
+*Linux*
+
+#+begin_src :eval never
+/usr/bin/google-chrome --remote-debugging-port=9222 --user-data-dir=/tmp/chrome-profile-stable
+#+end_src
+
+*Windows*
+
+#+begin_src :eval never
+"C:\Program Files\Google\Chrome\Application\chrome.exe" --remote-debugging-port=9222 --user-data-dir="%TEMP%\chrome-profile-stable"
+#+end_src
