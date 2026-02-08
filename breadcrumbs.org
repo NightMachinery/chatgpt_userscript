@@ -1,0 +1,48 @@
+#+TITLE: chatgpt_userscript/breadcrumbs
+
+* _
+#+BEGIN_SRC markdown
+can the chrome console js read a file `~/prompts.md` into a string var?
+#+END_SRC
+
+** @GPT5.2T
+Not directly, no.
+
+Even in the *Chrome DevTools Console*, the JavaScript you run is still “page JavaScript,” and browsers *don't allow arbitrary reads from your local filesystem* (like =/Users/evar/...=) without an explicit user action. That's a core security rule.
+
+*** The normal way (user picks the file)
+If you just want the contents as a string, use the File System Access API (Chrome supports it), which *prompts you to choose the file*:
+
+#+begin_src js :eval never
+// Run in the console (in a normal webpage tab)
+const [handle] = await window.showOpenFilePicker({
+  types: [{ description: "Markdown", accept: { "text/markdown": [".md"] } }]
+});
+const file = await handle.getFile();
+const text = await file.text();
+
+text; // <- string contents
+#+end_src
+
+*** Quick “console-only” alternative (creates a file input)
+#+begin_src js :eval never
+const input = document.createElement("input");
+input.type = "file";
+input.accept = ".md";
+input.onchange = async () => {
+  const text = await input.files[0].text();
+  console.log(text);
+  window.promptsMd = text; // save it globally if you want
+};
+input.click();
+#+end_src
+
+*** If you /must/ read that exact path without a picker
+That generally requires changing the environment, e.g.:
+
+- *Serve it over HTTP* (local server) and =fetch()= it, or
+- Use a *Chrome extension* with the right permissions, or
+- Launch Chrome with unsafe flags (not recommended).
+
+If you tell me what page/context you're in (regular website tab, =file://= tab, extension, etc.), I'll point you to the cleanest option for that situation.
+
