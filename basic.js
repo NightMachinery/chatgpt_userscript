@@ -191,6 +191,105 @@
     }
   }
 
+  async function chooseFileAsText() {
+    return new Promise((resolve, reject) => {
+      const input = document.createElement("input");
+      input.type = "file";
+      const textFileAccept = [
+        "text/*",
+        "application/json",
+        "application/ld+json",
+        "application/xml",
+        "application/x-yaml",
+        "application/yaml",
+        ".md",
+        ".markdown",
+        ".txt",
+        ".csv",
+        ".tsv",
+        ".json",
+        ".jsonl",
+        ".xml",
+        ".yml",
+        ".yaml",
+        ".toml",
+        ".ini",
+        ".cfg",
+        ".conf",
+        ".log"
+      ].join(",");
+      input.accept = textFileAccept;
+      input.style.display = "none";
+      document.body.appendChild(input);
+
+      let settled = false;
+      const cleanup = () => {
+        input.removeEventListener("change", onChange);
+        input.removeEventListener("cancel", onCancel);
+        window.removeEventListener("focus", onFocus);
+        input.remove();
+      };
+
+      const settleResolve = (value) => {
+        if (settled) {
+          return;
+        }
+        settled = true;
+        cleanup();
+        resolve(value);
+      };
+
+      const settleReject = (error) => {
+        if (settled) {
+          return;
+        }
+        settled = true;
+        cleanup();
+        reject(error instanceof Error ? error : new Error(String(error)));
+      };
+
+      const onChange = async () => {
+        const file = input.files && input.files[0];
+        if (!file) {
+          settleReject(new Error("No file selected."));
+          return;
+        }
+
+        try {
+          const text = await file.text();
+          settleResolve(text);
+        } catch (error) {
+          settleReject(error);
+        }
+      };
+
+      const onCancel = () => {
+        settleReject(new Error("File selection was canceled."));
+      };
+
+      const onFocus = () => {
+        setTimeout(() => {
+          if (settled) {
+            return;
+          }
+          if (!input.files || input.files.length === 0) {
+            settleReject(new Error("File selection was canceled."));
+          }
+        }, 0);
+      };
+
+      input.addEventListener("change", onChange);
+      input.addEventListener("cancel", onCancel);
+      window.addEventListener("focus", onFocus);
+      input.click();
+    });
+  }
+
+  async function sendMessageRepeatedlyArrayChooseFile(sleep, sep, prefix, postfix) {
+    const fileText = await chooseFileAsText();
+    await sendMessageRepeatedlyArray(fileText, sleep, sep, prefix, postfix);
+  }
+
   function clickDallEDownloadButtons() {
     const buttons = Array.from(
       document.querySelectorAll(
@@ -218,11 +317,13 @@
   window.sendMessage = sendMessage;
   window.sendMessageRepeatedly = sendMessageRepeatedly;
   window.sendMessageRepeatedlyArray = sendMessageRepeatedlyArray;
+  window.sendMessageRepeatedlyArrayChooseFile = sendMessageRepeatedlyArrayChooseFile;
   window.clickDallEDownloadButtons = clickDallEDownloadButtons;
 
   // Keep these globals so this call style works in console:
   // sendMessageRepeatedly("Thanks, continue.", n=2, sleep=60,)
   // sendMessageRepeatedlyArray("Prompt 1\nPrompt 2", sleep=10, sep="\n", prefix="", postfix="")
+  // sendMessageRepeatedlyArrayChooseFile(sleep=10, sep="\n", prefix="", postfix="")
   if (!("n" in window)) {
     window.n = undefined;
   }
