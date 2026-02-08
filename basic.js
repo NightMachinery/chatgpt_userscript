@@ -164,7 +164,35 @@
     }
   }
 
-  async function sendMessageRepeatedlyArray(msgs, sleep, sep, prefix, postfix) {
+  function toInteger(value, fallback) {
+    if (value === undefined || value === null) {
+      return fallback;
+    }
+    const n = Number(value);
+    if (!Number.isFinite(n)) {
+      throw new Error(`Expected an integer-compatible value, got: ${String(value)}`);
+    }
+    return Math.trunc(n);
+  }
+
+  function clamp(value, min, max) {
+    if (value < min) {
+      return min;
+    }
+    if (value > max) {
+      return max;
+    }
+    return value;
+  }
+
+  function normalizeIndex(index, length) {
+    if (index < 0) {
+      return length + index;
+    }
+    return index;
+  }
+
+  async function sendMessageRepeatedlyArray(msgs, sleep, sep, prefix, postfix, from, to) {
     const sleepSeconds = sleep ?? 30;
     const sleepDuration = sleepSeconds * 1000;
     const separator = sep ?? "\n";
@@ -180,11 +208,28 @@
       throw new Error("Expected msgs to be an array of strings or a string.");
     }
 
-    for (let i = 0; i < messages.length; i++) {
-      await sendMessage(`${prefixText}${messages[i]}${postfixText}`);
-      console.log(`Message sent (${i + 1}/${messages.length}).`);
+    if (messages.length === 0) {
+      console.log("No messages to send.");
+      return;
+    }
 
-      if (i < messages.length - 1) {
+    const fromIndexRaw = toInteger(from, 0);
+    const toIndexRaw = toInteger(to, -1);
+    const fromIndex = clamp(normalizeIndex(fromIndexRaw, messages.length), 0, messages.length - 1);
+    const toIndex = clamp(normalizeIndex(toIndexRaw, messages.length), 0, messages.length - 1);
+
+    if (fromIndex > toIndex) {
+      console.log(`No messages to send for range from=${fromIndexRaw}, to=${toIndexRaw}.`);
+      return;
+    }
+
+    const selectedMessages = messages.slice(fromIndex, toIndex + 1);
+
+    for (let i = 0; i < selectedMessages.length; i++) {
+      await sendMessage(`${prefixText}${selectedMessages[i]}${postfixText}`);
+      console.log(`Message sent (${i + 1}/${selectedMessages.length}).`);
+
+      if (i < selectedMessages.length - 1) {
         console.log(`Waiting ${sleepSeconds} seconds before the next send...`);
         await delay(sleepDuration);
       }
@@ -285,9 +330,9 @@
     });
   }
 
-  async function sendMessageRepeatedlyArrayChooseFile(sleep, sep, prefix, postfix) {
+  async function sendMessageRepeatedlyArrayChooseFile(sleep, sep, prefix, postfix, from, to) {
     const fileText = await chooseFileAsText();
-    await sendMessageRepeatedlyArray(fileText, sleep, sep, prefix, postfix);
+    await sendMessageRepeatedlyArray(fileText, sleep, sep, prefix, postfix, from, to);
   }
 
   function clickDallEDownloadButtons() {
@@ -322,8 +367,8 @@
 
   // Keep these globals so this call style works in console:
   // sendMessageRepeatedly("Thanks, continue.", n=2, sleep=60,)
-  // sendMessageRepeatedlyArray("Prompt 1\nPrompt 2", sleep=10, sep="\n", prefix="", postfix="")
-  // sendMessageRepeatedlyArrayChooseFile(sleep=10, sep="\n", prefix="", postfix="")
+  // sendMessageRepeatedlyArray("Prompt 1\nPrompt 2", sleep=10, sep="\n", prefix="", postfix="", from=0, to=-1)
+  // sendMessageRepeatedlyArrayChooseFile(sleep=10, sep="\n", prefix="", postfix="", from=0, to=-1)
   if (!("n" in window)) {
     window.n = undefined;
   }
@@ -338,6 +383,12 @@
   }
   if (!("postfix" in window)) {
     window.postfix = undefined;
+  }
+  if (!("from" in window)) {
+    window.from = undefined;
+  }
+  if (!("to" in window)) {
+    window.to = undefined;
   }
 
   console.log(
