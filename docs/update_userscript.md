@@ -157,6 +157,7 @@ If `clickDallEDownloadButtons()` breaks, inspect image tool actions from `take_s
 
 Avoid utility-class selectors like `div.group-hover\\/dalle-image\\:visible button`; they are brittle and often change upstream.
 Prefer stable attributes (`data-testid`, `aria-label`) whenever possible.
+Operational note: in some chats, image controls are only reliably discoverable after manually scrolling to the top of the chat before running `clickDallEDownloadButtons()`.
 
 ## Download Smoke Test Snippet
 

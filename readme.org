@@ -27,6 +27,7 @@ clickDallEDownloadButtons();
 - =sleep= in =sendMessageRepeatedly= is in seconds.
 - =timeout= in =sendMessage= is in seconds.
 - Download helper targets current image download button attributes.
+- =clickDallEDownloadButtons()= may require manually scrolling to the top of the chat so target image download buttons are present/visible.
 
 * Maintenance
 For adapting to upstream ChatGPT UI changes with MCP, see:
