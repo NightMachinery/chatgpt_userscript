@@ -4,3 +4,9 @@
 #+BEGIN_SRC markdown
 open chrome using mcp and wait for me to sign in to chatgpt
 #+END_SRC
+
+#+BEGIN_SRC markdown
+Write the userscript in `basic.js`.
+
+Write `docs/update_userscript.md` which tells a future coding agent how to use the MCP to check, debug and update the userscript to adapt to changes upstream.
+#+END_SRC
