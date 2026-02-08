@@ -164,6 +164,33 @@
     }
   }
 
+  async function sendMessageRepeatedlyArray(msgs, sleep, sep, prefix, postfix) {
+    const sleepSeconds = sleep ?? 30;
+    const sleepDuration = sleepSeconds * 1000;
+    const separator = sep ?? "\n";
+    const prefixText = prefix ?? "";
+    const postfixText = postfix ?? "";
+
+    let messages;
+    if (Array.isArray(msgs)) {
+      messages = msgs.map((msg) => String(msg));
+    } else if (typeof msgs === "string") {
+      messages = msgs.split(separator);
+    } else {
+      throw new Error("Expected msgs to be an array of strings or a string.");
+    }
+
+    for (let i = 0; i < messages.length; i++) {
+      await sendMessage(`${prefixText}${messages[i]}${postfixText}`);
+      console.log(`Message sent (${i + 1}/${messages.length}).`);
+
+      if (i < messages.length - 1) {
+        console.log(`Waiting ${sleepSeconds} seconds before the next send...`);
+        await delay(sleepDuration);
+      }
+    }
+  }
+
   function clickDallEDownloadButtons() {
     const buttons = Array.from(
       document.querySelectorAll(
@@ -190,15 +217,26 @@
   window.clickSendButton = clickSendButton;
   window.sendMessage = sendMessage;
   window.sendMessageRepeatedly = sendMessageRepeatedly;
+  window.sendMessageRepeatedlyArray = sendMessageRepeatedlyArray;
   window.clickDallEDownloadButtons = clickDallEDownloadButtons;
 
   // Keep these globals so this call style works in console:
   // sendMessageRepeatedly("Thanks, continue.", n=2, sleep=60,)
+  // sendMessageRepeatedlyArray("Prompt 1\nPrompt 2", sleep=10, sep="\n", prefix="", postfix="")
   if (!("n" in window)) {
     window.n = undefined;
   }
   if (!("sleep" in window)) {
     window.sleep = undefined;
+  }
+  if (!("sep" in window)) {
+    window.sep = undefined;
+  }
+  if (!("prefix" in window)) {
+    window.prefix = undefined;
+  }
+  if (!("postfix" in window)) {
+    window.postfix = undefined;
   }
 
   console.log(
