@@ -35,7 +35,7 @@ clickDallEDownloadButtons();
 - =to= is an exclusive end index in array helpers.
 - =to= defaults to =0=, and =to=0= maps to end-of-array (send all items from =from=).
 - Download helper targets current image download button attributes.
-- Downloader click throttling is built in: after every 10 download clicks, it waits 5 seconds before continuing.
+- Downloader click throttling is built in: after every 10 download clicks, it waits 1.1 seconds before continuing.
 - =clickDallEDownloadButtons()= may require manually scrolling to the top of the chat so target image download buttons are present/visible.
 
 * Maintenance

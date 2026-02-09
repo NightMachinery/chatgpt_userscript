@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         ChatGPT Message Helper
 // @namespace    https://chatgpt.com/
-// @version      1.1.2
+// @version      1.1.3
 // @description  Reliable message sending helpers for ChatGPT web UI changes.
 // @match        https://chatgpt.com/*
 // @grant        none
@@ -18,7 +18,7 @@
     noButtonsFound: "No image download buttons found."
   });
   const DOWNLOAD_CLICK_BURST_SIZE = 10;
-  const DOWNLOAD_CLICK_BURST_DELAY_MS = 5000;
+  const DOWNLOAD_CLICK_BURST_DELAY_MS = 1100;
 
   function delay(duration) {
     return new Promise((resolve) => setTimeout(resolve, duration));
