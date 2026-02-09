@@ -8,7 +8,10 @@ Keep these APIs working:
 
 - `promptSet(msg)`
 - `sendMessage(msg, checkInterval, sleep, timeout)`
-- `sendMessageRepeatedly(msg, n, sleep, newChatP)`
+- `sendMessageRepeatedly(msg, n, sleep, mode)`
+- `sendMessageRepeatedlyArray(msgs, sleep, sep, prefix, postfix, from, to, mode)`
+- `sendMessageRepeatedlyArrayChooseFile(sleep, sep, prefix, postfix, from, to, mode)`
+- `openNewChat()`
 - `clickDallEDownloadButtons()`
 
 Required call style to preserve:
@@ -116,6 +119,16 @@ If upstream changes this, update:
 
 Do not click random composer buttons by class only; many look similar (voice, dictate, submit).
 
+When `mode === "new_chat_image"` in repeated send helpers, current flow is:
+
+1. send prompt
+2. wait until a visible image download button appears for the newest response
+3. click that download button
+4. trigger new chat shortcut (`fireShortcut("o", "KeyO", { shift: true })`)
+5. wait briefly, then continue
+
+If this breaks, inspect the download selector and shortcut dispatch behavior.
+
 ## Smoke Test Snippet
 
 After editing `basic.js`, run this in-page with `evaluate_script`:
@@ -218,6 +231,6 @@ If it fails, check:
 When updating `basic.js`:
 
 - Preserve exported globals (`window.sendMessageRepeatedly`, etc.)
-- Preserve the required call style support (`window.n`, `window.sleep`)
+- Preserve the required call style support (`window.n`, `window.sleep`, `window.mode`)
 - Keep fallbacks for both `contenteditable` and `textarea` composer variants
 - Keep errors explicit (`throw new Error(...)`) for easier debugging

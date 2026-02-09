@@ -1,15 +1,66 @@
 // ==UserScript==
 // @name         ChatGPT Message Helper
 // @namespace    https://chatgpt.com/
-// @version      1.0.0
+// @version      1.1.0
 // @description  Reliable message sending helpers for ChatGPT web UI changes.
 // @match        https://chatgpt.com/*
 // @grant        none
 // ==/UserScript==
 
 (function () {
+  const DOWNLOAD_BUTTON_SELECTOR =
+    'button[aria-label="Download this image"], button[aria-label*="Download image" i], button[data-testid*="download" i]';
+  const SEND_MODES = Object.freeze({
+    CONTINUOUS: "continuous",
+    NEW_CHAT_IMAGE: "new_chat_image"
+  });
+  const DOWNLOAD_LOG_MESSAGES = Object.freeze({
+    noButtonsFound: "No image download buttons found."
+  });
+
   function delay(duration) {
     return new Promise((resolve) => setTimeout(resolve, duration));
+  }
+
+  function normalizeSendMode(mode) {
+    if (mode === undefined || mode === null) {
+      return SEND_MODES.CONTINUOUS;
+    }
+
+    const normalized = String(mode).trim().toLowerCase();
+
+    if (normalized === SEND_MODES.CONTINUOUS) {
+      return SEND_MODES.CONTINUOUS;
+    }
+    if (normalized === SEND_MODES.NEW_CHAT_IMAGE) {
+      return SEND_MODES.NEW_CHAT_IMAGE;
+    }
+
+    throw new Error(
+      `Unsupported mode: ${String(mode)}. Use "${SEND_MODES.CONTINUOUS}" or "${SEND_MODES.NEW_CHAT_IMAGE}".`
+    );
+  }
+
+  function isElementDisabled(element) {
+    return Boolean(
+      element &&
+        ((typeof element.disabled === "boolean" && element.disabled) ||
+          element.getAttribute("aria-disabled") === "true")
+    );
+  }
+
+  function isElementVisible(element) {
+    if (!(element instanceof Element)) {
+      return false;
+    }
+
+    const style = window.getComputedStyle(element);
+    if (style.display === "none" || style.visibility === "hidden") {
+      return false;
+    }
+
+    const rect = element.getBoundingClientRect();
+    return rect.width > 0 && rect.height > 0;
   }
 
   function getPromptElement() {
@@ -73,6 +124,66 @@
     return document.querySelector(
       'button[data-testid="send-button"], button[aria-label="Send prompt"], button[aria-label="Send"]'
     );
+  }
+
+  function getDownloadButtons() {
+    return Array.from(document.querySelectorAll(DOWNLOAD_BUTTON_SELECTOR)).filter(
+      (button) => !isElementDisabled(button) && isElementVisible(button)
+    );
+  }
+
+  function getNewDownloadButtons(previousButtons) {
+    if (!(previousButtons instanceof Set) || previousButtons.size === 0) {
+      return getDownloadButtons();
+    }
+
+    return getDownloadButtons().filter((button) => !previousButtons.has(button));
+  }
+
+  async function waitForDownloadButtonVisible(checkInterval, timeout, previousButtons) {
+    const intervalMs = checkInterval ?? 300;
+    const timeoutSeconds = timeout ?? 3600;
+    const timeoutMs = timeoutSeconds * 1000;
+    const startTime = Date.now();
+
+    while (Date.now() - startTime < timeoutMs) {
+      const buttons = getNewDownloadButtons(previousButtons);
+      if (buttons.length > 0) {
+        return buttons;
+      }
+      await delay(intervalMs);
+    }
+
+    throw new Error("Timed out waiting for a new visible image download button.");
+  }
+
+  function fireShortcut(key, code, { meta = true, shift = false, ctrl = false, alt = false } = {}) {
+    const opts = {
+      key,
+      code,
+      metaKey: meta,
+      shiftKey: shift,
+      ctrlKey: ctrl,
+      altKey: alt,
+      bubbles: true,
+      cancelable: true,
+      composed: true
+    };
+    const targets = [document.activeElement, document.body, document];
+    const dispatchedTargets = new Set();
+    for (const target of targets) {
+      if (!target || dispatchedTargets.has(target)) {
+        continue;
+      }
+      dispatchedTargets.add(target);
+      target.dispatchEvent(new KeyboardEvent("keydown", opts));
+      target.dispatchEvent(new KeyboardEvent("keyup", opts));
+    }
+  }
+
+  async function openNewChat() {
+    fireShortcut("o", "KeyO", { shift: true });
+    await delay(1200);
   }
 
   function isBusyGenerating() {
@@ -146,21 +257,52 @@
     await waitForButtonAvailable(intervalMs, sleepMs, startTime, timeoutMs, setMsgFn);
   }
 
-  async function sendMessageRepeatedly(msg, n, sleep, newChatP) {
-    void newChatP;
+  function clickDownloadButtons(buttons, noButtonsMessage = DOWNLOAD_LOG_MESSAGES.noButtonsFound) {
+    if (!Array.isArray(buttons) || buttons.length === 0) {
+      console.log(noButtonsMessage);
+      return 0;
+    }
 
+    console.log(`Found ${buttons.length} image download button(s). Clicking all.`);
+    buttons.forEach((button, index) => {
+      console.log(`Clicking button ${index + 1}`);
+      button.click();
+    });
+    return buttons.length;
+  }
+
+  async function handlePostSend(index, total, sleepDuration, sleepSeconds, useNewChat, previousButtons) {
+    if (useNewChat) {
+      console.log("Waiting for image download button...");
+      const newButtons = await waitForDownloadButtonVisible(undefined, undefined, previousButtons);
+      const clickedCount = clickDownloadButtons(newButtons);
+      console.log(`Image downloaded (${index + 1}/${total}) via ${clickedCount} click(s).`);
+
+      if (index < total - 1) {
+        await openNewChat();
+        await delay(sleepDuration > 0 ? sleepDuration : 1200);
+      }
+      return;
+    }
+
+    if (index < total - 1) {
+      console.log(`Waiting ${sleepSeconds} seconds before the next send...`);
+      await delay(sleepDuration);
+    }
+  }
+
+  async function sendMessageRepeatedly(msg, n, sleep, mode) {
     const count = n ?? 10;
     const sleepSeconds = sleep ?? 30;
     const sleepDuration = sleepSeconds * 1000;
+    const sendMode = normalizeSendMode(mode);
+    const useNewChat = sendMode === SEND_MODES.NEW_CHAT_IMAGE;
 
     for (let i = 0; i < count; i++) {
+      const previousButtons = useNewChat ? new Set(getDownloadButtons()) : undefined;
       await sendMessage(msg);
       console.log(`Message sent (${i + 1}/${count}).`);
-
-      if (i < count - 1) {
-        console.log(`Waiting ${sleepSeconds} seconds before the next send...`);
-        await delay(sleepDuration);
-      }
+      await handlePostSend(i, count, sleepDuration, sleepSeconds, useNewChat, previousButtons);
     }
   }
 
@@ -192,12 +334,14 @@
     return index;
   }
 
-  async function sendMessageRepeatedlyArray(msgs, sleep, sep, prefix, postfix, from, to) {
+  async function sendMessageRepeatedlyArray(msgs, sleep, sep, prefix, postfix, from, to, mode) {
     const sleepSeconds = sleep ?? 30;
     const sleepDuration = sleepSeconds * 1000;
     const separator = sep ?? "\n";
     const prefixText = prefix ?? "";
     const postfixText = postfix ?? "";
+    const sendMode = normalizeSendMode(mode);
+    const useNewChat = sendMode === SEND_MODES.NEW_CHAT_IMAGE;
 
     let messages;
     if (Array.isArray(msgs)) {
@@ -226,13 +370,17 @@
     const selectedMessages = messages.slice(fromIndex, toIndex + 1);
 
     for (let i = 0; i < selectedMessages.length; i++) {
+      const previousButtons = useNewChat ? new Set(getDownloadButtons()) : undefined;
       await sendMessage(`${prefixText}${selectedMessages[i]}${postfixText}`);
       console.log(`Message sent (${i + 1}/${selectedMessages.length}).`);
-
-      if (i < selectedMessages.length - 1) {
-        console.log(`Waiting ${sleepSeconds} seconds before the next send...`);
-        await delay(sleepDuration);
-      }
+      await handlePostSend(
+        i,
+        selectedMessages.length,
+        sleepDuration,
+        sleepSeconds,
+        useNewChat,
+        previousButtons
+      );
     }
   }
 
@@ -330,35 +478,31 @@
     });
   }
 
-  async function sendMessageRepeatedlyArrayChooseFile(sleep, sep, prefix, postfix, from, to) {
+  async function sendMessageRepeatedlyArrayChooseFile(
+    sleep,
+    sep,
+    prefix,
+    postfix,
+    from,
+    to,
+    mode
+  ) {
     const fileText = await chooseFileAsText();
-    await sendMessageRepeatedlyArray(fileText, sleep, sep, prefix, postfix, from, to);
+    await sendMessageRepeatedlyArray(fileText, sleep, sep, prefix, postfix, from, to, mode);
   }
 
   function clickDallEDownloadButtons() {
-    const buttons = Array.from(
-      document.querySelectorAll(
-        'button[aria-label="Download this image"], button[aria-label*="Download image" i], button[data-testid*="download" i]'
-      )
-    ).filter((button) => !button.disabled);
-
-    if (buttons.length === 0) {
-      console.log("No DALL·E download buttons found.");
-      return;
-    }
-
-    console.log(`Found ${buttons.length} DALL·E download buttons. Clicking all.`);
-    buttons.forEach((button, index) => {
-      console.log(`Clicking button ${index + 1}`);
-      button.click();
-    });
+    return clickDownloadButtons(getDownloadButtons());
   }
 
   // Export helpers so they are callable from devtools console.
   window.delay = delay;
+  window.fireShortcut = fireShortcut;
+  window.sendModes = SEND_MODES;
   window.promptSet = promptSet;
   window.clickRegenerate = clickRegenerate;
   window.clickSendButton = clickSendButton;
+  window.openNewChat = openNewChat;
   window.sendMessage = sendMessage;
   window.sendMessageRepeatedly = sendMessageRepeatedly;
   window.sendMessageRepeatedlyArray = sendMessageRepeatedlyArray;
@@ -367,8 +511,8 @@
 
   // Keep these globals so this call style works in console:
   // sendMessageRepeatedly("Thanks, continue.", n=2, sleep=60,)
-  // sendMessageRepeatedlyArray("Prompt 1\nPrompt 2", sleep=10, sep="\n", prefix="", postfix="", from=0, to=-1)
-  // sendMessageRepeatedlyArrayChooseFile(sleep=10, sep="\n", prefix="", postfix="", from=0, to=-1)
+  // sendMessageRepeatedlyArray("Prompt 1\nPrompt 2", sleep=10, sep="\n", prefix="", postfix="", from=0, to=-1, mode="continuous")
+  // sendMessageRepeatedlyArrayChooseFile(sleep=10, sep="\n", prefix="", postfix="", from=0, to=-1, mode="new_chat_image")
   if (!("n" in window)) {
     window.n = undefined;
   }
@@ -389,6 +533,9 @@
   }
   if (!("to" in window)) {
     window.to = undefined;
+  }
+  if (!("mode" in window)) {
+    window.mode = undefined;
   }
 
   console.log(

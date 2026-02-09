@@ -13,19 +13,25 @@
 * Quick use (browser console)
 The script exposes helpers on =window=:
 - =sendMessage(msg, checkInterval, sleep, timeout)=
-- =sendMessageRepeatedly(msg, n, sleep, newChatP)=
+- =sendMessageRepeatedly(msg, n, sleep, mode)=
+- =sendMessageRepeatedlyArray(msgs, sleep, sep, prefix, postfix, from, to, mode)=
+- =sendMessageRepeatedlyArrayChooseFile(sleep, sep, prefix, postfix, from, to, mode)=
+- =openNewChat()=
 - =clickDallEDownloadButtons()=
 
 Examples:
 #+begin_src js
 sendMessage("Hello");
 sendMessageRepeatedly("Thanks, continue.", n=2, sleep=60,);
+sendMessageRepeatedlyArrayChooseFile(sleep=10, sep="\n", prefix="", postfix="", from=0, to=-1, mode="new_chat_image");
 clickDallEDownloadButtons();
 #+end_src
 
 * Notes
 - =sleep= in =sendMessageRepeatedly= is in seconds.
 - =timeout= in =sendMessage= is in seconds.
+- =mode= defaults to =continuous=.
+- =mode="new_chat_image"= waits for a visible image download button, clicks it, opens a new chat, then sends the next prompt.
 - Download helper targets current image download button attributes.
 - =clickDallEDownloadButtons()= may require manually scrolling to the top of the chat so target image download buttons are present/visible.
 
