@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         ChatGPT Message Helper
 // @namespace    https://chatgpt.com/
-// @version      1.1.1
+// @version      1.1.2
 // @description  Reliable message sending helpers for ChatGPT web UI changes.
 // @match        https://chatgpt.com/*
 // @grant        none
@@ -339,7 +339,10 @@
     return value;
   }
 
-  function normalizeIndex(index, length) {
+  function normalizeIndex(index, length, zeroMeansLength) {
+    if (zeroMeansLength && index === 0) {
+      return length;
+    }
     if (index < 0) {
       return length + index;
     }
@@ -370,16 +373,16 @@
     }
 
     const fromIndexRaw = toInteger(from, 0);
-    const toIndexRaw = toInteger(to, -1);
-    const fromIndex = clamp(normalizeIndex(fromIndexRaw, messages.length), 0, messages.length - 1);
-    const toIndex = clamp(normalizeIndex(toIndexRaw, messages.length), 0, messages.length - 1);
+    const toIndexRaw = toInteger(to, 0);
+    const fromIndex = clamp(normalizeIndex(fromIndexRaw, messages.length, false), 0, messages.length);
+    const toIndexExclusive = clamp(normalizeIndex(toIndexRaw, messages.length, true), 0, messages.length);
 
-    if (fromIndex > toIndex) {
+    if (fromIndex >= toIndexExclusive) {
       console.log(`No messages to send for range from=${fromIndexRaw}, to=${toIndexRaw}.`);
       return;
     }
 
-    const selectedMessages = messages.slice(fromIndex, toIndex + 1);
+    const selectedMessages = messages.slice(fromIndex, toIndexExclusive);
 
     for (let i = 0; i < selectedMessages.length; i++) {
       const previousButtons = useNewChat ? new Set(getDownloadButtons()) : undefined;
@@ -523,8 +526,8 @@
 
   // Keep these globals so this call style works in console:
   // sendMessageRepeatedly("Thanks, continue.", n=2, sleep=60,)
-  // sendMessageRepeatedlyArray("Prompt 1\nPrompt 2", sleep=10, sep="\n", prefix="", postfix="", from=0, to=-1, mode="continuous")
-  // sendMessageRepeatedlyArrayChooseFile(sleep=10, sep="\n", prefix="", postfix="", from=0, to=-1, mode="new_chat_image")
+  // sendMessageRepeatedlyArray("Prompt 1\nPrompt 2", sleep=10, sep="\n", prefix="", postfix="", from=0, to=0, mode="continuous")
+  // sendMessageRepeatedlyArrayChooseFile(sleep=10, sep="\n", prefix="", postfix="", from=0, to=0, mode="new_chat_image")
   if (!("n" in window)) {
     window.n = undefined;
   }

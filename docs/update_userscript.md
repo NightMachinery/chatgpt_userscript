@@ -129,6 +129,14 @@ When `mode === "new_chat_image"` in repeated send helpers, current flow is:
 
 If this breaks, inspect the download selector and shortcut dispatch behavior.
 
+## Array Range Semantics
+
+For `sendMessageRepeatedlyArray(...)` and `sendMessageRepeatedlyArrayChooseFile(...)`:
+
+- `from` is inclusive.
+- `to` is exclusive.
+- `to=0` maps to end-of-array (full range from `from` to the end).
+
 ## Smoke Test Snippet
 
 After editing `basic.js`, run this in-page with `evaluate_script`:
