@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         ChatGPT Message Helper
 // @namespace    https://chatgpt.com/
-// @version      1.1.0
+// @version      1.1.1
 // @description  Reliable message sending helpers for ChatGPT web UI changes.
 // @match        https://chatgpt.com/*
 // @grant        none
@@ -17,6 +17,8 @@
   const DOWNLOAD_LOG_MESSAGES = Object.freeze({
     noButtonsFound: "No image download buttons found."
   });
+  const DOWNLOAD_CLICK_BURST_SIZE = 10;
+  const DOWNLOAD_CLICK_BURST_DELAY_MS = 5000;
 
   function delay(duration) {
     return new Promise((resolve) => setTimeout(resolve, duration));
@@ -257,17 +259,27 @@
     await waitForButtonAvailable(intervalMs, sleepMs, startTime, timeoutMs, setMsgFn);
   }
 
-  function clickDownloadButtons(buttons, noButtonsMessage = DOWNLOAD_LOG_MESSAGES.noButtonsFound) {
+  async function clickDownloadButtons(buttons, noButtonsMessage = DOWNLOAD_LOG_MESSAGES.noButtonsFound) {
     if (!Array.isArray(buttons) || buttons.length === 0) {
       console.log(noButtonsMessage);
       return 0;
     }
 
     console.log(`Found ${buttons.length} image download button(s). Clicking all.`);
-    buttons.forEach((button, index) => {
+    for (let index = 0; index < buttons.length; index++) {
+      const button = buttons[index];
       console.log(`Clicking button ${index + 1}`);
       button.click();
-    });
+      const clickedCount = index + 1;
+      const shouldPause =
+        clickedCount % DOWNLOAD_CLICK_BURST_SIZE === 0 && clickedCount < buttons.length;
+      if (shouldPause) {
+        console.log(
+          `Pausing ${DOWNLOAD_CLICK_BURST_DELAY_MS / 1000} seconds after ${clickedCount} download clicks...`
+        );
+        await delay(DOWNLOAD_CLICK_BURST_DELAY_MS);
+      }
+    }
     return buttons.length;
   }
 
@@ -275,7 +287,7 @@
     if (useNewChat) {
       console.log("Waiting for image download button...");
       const newButtons = await waitForDownloadButtonVisible(undefined, undefined, previousButtons);
-      const clickedCount = clickDownloadButtons(newButtons);
+      const clickedCount = await clickDownloadButtons(newButtons);
       console.log(`Image downloaded (${index + 1}/${total}) via ${clickedCount} click(s).`);
 
       if (index < total - 1) {
@@ -491,7 +503,7 @@
     await sendMessageRepeatedlyArray(fileText, sleep, sep, prefix, postfix, from, to, mode);
   }
 
-  function clickDallEDownloadButtons() {
+  async function clickDallEDownloadButtons() {
     return clickDownloadButtons(getDownloadButtons());
   }
 
