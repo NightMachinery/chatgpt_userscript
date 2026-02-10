@@ -19,6 +19,9 @@
   });
   const DOWNLOAD_CLICK_BURST_SIZE = 10;
   const DOWNLOAD_CLICK_BURST_DELAY_MS = 1100;
+  const IMAGE_DOWNLOAD_TIMEOUT_SECONDS = 1800;
+  const IMAGE_DOWNLOAD_TIMEOUT_ERROR_MESSAGE =
+    "Timed out waiting for a new visible image download button.";
 
   function delay(duration) {
     return new Promise((resolve) => setTimeout(resolve, duration));
@@ -144,7 +147,7 @@
 
   async function waitForDownloadButtonVisible(checkInterval, timeout, previousButtons) {
     const intervalMs = checkInterval ?? 300;
-    const timeoutSeconds = timeout ?? 3600;
+    const timeoutSeconds = timeout ?? IMAGE_DOWNLOAD_TIMEOUT_SECONDS;
     const timeoutMs = timeoutSeconds * 1000;
     const startTime = Date.now();
 
@@ -156,7 +159,39 @@
       await delay(intervalMs);
     }
 
-    throw new Error("Timed out waiting for a new visible image download button.");
+    throw new Error(IMAGE_DOWNLOAD_TIMEOUT_ERROR_MESSAGE);
+  }
+
+  function isImageDownloadTimeoutError(error) {
+    return Boolean(
+      error &&
+        typeof error === "object" &&
+        typeof error.message === "string" &&
+        error.message.includes(IMAGE_DOWNLOAD_TIMEOUT_ERROR_MESSAGE)
+    );
+  }
+
+  function downloadTextFile(content, filenamePrefix) {
+    const safePrefix = String(filenamePrefix ?? "failed_prompt")
+      .trim()
+      .replace(/[^a-z0-9._-]+/gi, "_")
+      .replace(/^_+|_+$/g, "");
+    const fallbackPrefix = safePrefix.length > 0 ? safePrefix : "failed_prompt";
+    const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
+    const filename = `${fallbackPrefix}_${timestamp}.txt`;
+    const blob = new Blob([String(content ?? "")], { type: "text/plain;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = filename;
+    link.style.display = "none";
+    document.body.appendChild(link);
+    link.click();
+    setTimeout(() => {
+      URL.revokeObjectURL(url);
+      link.remove();
+    }, 0);
+    return filename;
   }
 
   function fireShortcut(key, code, { meta = true, shift = false, ctrl = false, alt = false } = {}) {
@@ -349,7 +384,7 @@
     return index;
   }
 
-  async function sendMessageRepeatedlyArray(msgs, sleep, sep, prefix, postfix, from, to, mode) {
+  async function sendMessageRepeatedlyArray(msgs, sleep, sep, prefix, postfix, from, to, mode, options) {
     const sleepSeconds = sleep ?? 30;
     const sleepDuration = sleepSeconds * 1000;
     const separator = sep ?? "\n";
@@ -357,6 +392,9 @@
     const postfixText = postfix ?? "";
     const sendMode = normalizeSendMode(mode);
     const useNewChat = sendMode === SEND_MODES.NEW_CHAT_IMAGE;
+    const continueOnImageDownloadTimeout = Boolean(
+      useNewChat && options && options.continueOnImageDownloadTimeout
+    );
 
     let messages;
     if (Array.isArray(msgs)) {
@@ -385,17 +423,40 @@
     const selectedMessages = messages.slice(fromIndex, toIndexExclusive);
 
     for (let i = 0; i < selectedMessages.length; i++) {
+      const fullPrompt = `${prefixText}${selectedMessages[i]}${postfixText}`;
       const previousButtons = useNewChat ? new Set(getDownloadButtons()) : undefined;
-      await sendMessage(`${prefixText}${selectedMessages[i]}${postfixText}`);
+      await sendMessage(fullPrompt);
       console.log(`Message sent (${i + 1}/${selectedMessages.length}).`);
-      await handlePostSend(
-        i,
-        selectedMessages.length,
-        sleepDuration,
-        sleepSeconds,
-        useNewChat,
-        previousButtons
-      );
+
+      try {
+        await handlePostSend(
+          i,
+          selectedMessages.length,
+          sleepDuration,
+          sleepSeconds,
+          useNewChat,
+          previousButtons
+        );
+      } catch (error) {
+        if (!continueOnImageDownloadTimeout || !isImageDownloadTimeoutError(error)) {
+          throw error;
+        }
+
+        const failedFilename = downloadTextFile(
+          fullPrompt,
+          `failed_prompt_${i + 1}_of_${selectedMessages.length}`
+        );
+        console.error(
+          `Timed out waiting for image download button (${i + 1}/${selectedMessages.length}). ` +
+            `Saved failed prompt to "${failedFilename}". Continuing.`,
+          error
+        );
+
+        if (i < selectedMessages.length - 1) {
+          await openNewChat();
+          await delay(sleepDuration > 0 ? sleepDuration : 1200);
+        }
+      }
     }
   }
 
@@ -503,7 +564,10 @@
     mode
   ) {
     const fileText = await chooseFileAsText();
-    await sendMessageRepeatedlyArray(fileText, sleep, sep, prefix, postfix, from, to, mode);
+    const sendMode = normalizeSendMode(mode);
+    await sendMessageRepeatedlyArray(fileText, sleep, sep, prefix, postfix, from, to, sendMode, {
+      continueOnImageDownloadTimeout: sendMode === SEND_MODES.NEW_CHAT_IMAGE
+    });
   }
 
   async function clickDallEDownloadButtons() {
