@@ -19,7 +19,7 @@
   });
   const DOWNLOAD_CLICK_BURST_SIZE = 10;
   const DOWNLOAD_CLICK_BURST_DELAY_MS = 1100;
-  const IMAGE_DOWNLOAD_TIMEOUT_SECONDS = 1800;
+  const IMAGE_DOWNLOAD_TIMEOUT_SECONDS = 600;
   const IMAGE_DOWNLOAD_TIMEOUT_ERROR_MESSAGE =
     "Timed out waiting for a new visible image download button.";
 
