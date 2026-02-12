@@ -19,6 +19,8 @@
   });
   const DOWNLOAD_CLICK_BURST_SIZE = 10;
   const DOWNLOAD_CLICK_BURST_DELAY_MS = 1100;
+  const DOWNLOAD_FILENAME_HOOK_TIMEOUT_MS = 1500;
+  const DEFAULT_IMAGE_DOWNLOAD_EXTENSION = ".png";
   const IMAGE_DOWNLOAD_TIMEOUT_SECONDS = 600;
   const IMAGE_DOWNLOAD_TIMEOUT_ERROR_MESSAGE =
     "Timed out waiting for a new visible image download button.";
@@ -194,6 +196,113 @@
     return filename;
   }
 
+  function sanitizeFilenameBase(value, fallback = "download") {
+    const safeBase = String(value ?? "")
+      .trim()
+      .replace(/[^a-z0-9._-]+/gi, "_")
+      .replace(/^_+|_+$/g, "");
+    return safeBase.length > 0 ? safeBase : fallback;
+  }
+
+  function extractExtensionCandidate(value) {
+    if (typeof value !== "string") {
+      return "";
+    }
+
+    const trimmed = value.trim();
+    if (trimmed.length === 0) {
+      return "";
+    }
+
+    const withoutHash = trimmed.split("#")[0];
+    const withoutQuery = withoutHash.split("?")[0];
+    const slashIndex = withoutQuery.lastIndexOf("/");
+    const basename = slashIndex >= 0 ? withoutQuery.slice(slashIndex + 1) : withoutQuery;
+    const decodedBasename = (() => {
+      try {
+        return decodeURIComponent(basename);
+      } catch (_) {
+        return basename;
+      }
+    })();
+    const match = decodedBasename.match(/\.([a-z0-9]{1,10})$/i);
+    return match ? `.${String(match[1]).toLowerCase()}` : "";
+  }
+
+  function inferDownloadExtension(anchor) {
+    if (!(anchor instanceof HTMLAnchorElement)) {
+      return DEFAULT_IMAGE_DOWNLOAD_EXTENSION;
+    }
+
+    return (
+      extractExtensionCandidate(anchor.getAttribute("download")) ||
+      extractExtensionCandidate(anchor.download) ||
+      extractExtensionCandidate(anchor.href) ||
+      DEFAULT_IMAGE_DOWNLOAD_EXTENSION
+    );
+  }
+
+  function createDownloadRenameHook(filenameBase, timeoutMs = DOWNLOAD_FILENAME_HOOK_TIMEOUT_MS) {
+    const safeBase = sanitizeFilenameBase(filenameBase, "download");
+    const originalAnchorClick = HTMLAnchorElement.prototype.click;
+    let settled = false;
+    let resolveResult;
+    let timeoutId = null;
+
+    const result = new Promise((resolve) => {
+      resolveResult = resolve;
+    });
+
+    function cleanup(payload) {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      if (timeoutId !== null) {
+        clearTimeout(timeoutId);
+        timeoutId = null;
+      }
+      document.removeEventListener("click", onDocumentClickCapture, true);
+      HTMLAnchorElement.prototype.click = originalAnchorClick;
+      resolveResult(payload);
+    }
+
+    function tryRenameAnchor(anchor) {
+      if (!(anchor instanceof HTMLAnchorElement) || settled) {
+        return false;
+      }
+      const extension = inferDownloadExtension(anchor);
+      const filename = `${safeBase}${extension}`;
+      anchor.download = filename;
+      cleanup({ applied: true, filename });
+      return true;
+    }
+
+    function onDocumentClickCapture(event) {
+      if (!(event.target instanceof Element)) {
+        return;
+      }
+      const anchor = event.target.closest("a");
+      if (anchor instanceof HTMLAnchorElement) {
+        tryRenameAnchor(anchor);
+      }
+    }
+
+    function patchedAnchorClick(...args) {
+      tryRenameAnchor(this);
+      return originalAnchorClick.apply(this, args);
+    }
+
+    HTMLAnchorElement.prototype.click = patchedAnchorClick;
+    document.addEventListener("click", onDocumentClickCapture, true);
+    timeoutId = window.setTimeout(() => cleanup({ applied: false, filename: null }), timeoutMs);
+
+    return {
+      result,
+      stop: () => cleanup({ applied: false, filename: null })
+    };
+  }
+
   function fireShortcut(key, code, { meta = true, shift = false, ctrl = false, alt = false } = {}) {
     const opts = {
       key,
@@ -294,17 +403,53 @@
     await waitForButtonAvailable(intervalMs, sleepMs, startTime, timeoutMs, setMsgFn);
   }
 
-  async function clickDownloadButtons(buttons, noButtonsMessage = DOWNLOAD_LOG_MESSAGES.noButtonsFound) {
+  async function clickDownloadButtons(
+    buttons,
+    noButtonsMessage = DOWNLOAD_LOG_MESSAGES.noButtonsFound,
+    options
+  ) {
     if (!Array.isArray(buttons) || buttons.length === 0) {
       console.log(noButtonsMessage);
       return 0;
     }
 
+    const filenameBaseBuilder =
+      options && typeof options.filenameBaseBuilder === "function"
+        ? options.filenameBaseBuilder
+        : null;
+
     console.log(`Found ${buttons.length} image download button(s). Clicking all.`);
     for (let index = 0; index < buttons.length; index++) {
       const button = buttons[index];
       console.log(`Clicking button ${index + 1}`);
-      button.click();
+
+      const filenameBase = filenameBaseBuilder ? filenameBaseBuilder(index, button) : null;
+      if (filenameBase !== null && filenameBase !== undefined && filenameBase !== "") {
+        const renameHook = createDownloadRenameHook(filenameBase);
+        let clickError = null;
+        try {
+          button.click();
+        } catch (error) {
+          clickError = error;
+          renameHook.stop();
+        }
+
+        if (clickError) {
+          throw clickError;
+        }
+
+        const renameResult = await renameHook.result;
+        if (!renameResult.applied) {
+          console.warn(
+            `Could not intercept download filename for base "${filenameBase}". Keeping browser-provided name.`
+          );
+        } else {
+          console.log(`Renamed download to "${renameResult.filename}".`);
+        }
+      } else {
+        button.click();
+      }
+
       const clickedCount = index + 1;
       const shouldPause =
         clickedCount % DOWNLOAD_CLICK_BURST_SIZE === 0 && clickedCount < buttons.length;
@@ -318,12 +463,30 @@
     return buttons.length;
   }
 
-  async function handlePostSend(index, total, sleepDuration, sleepSeconds, useNewChat, previousButtons) {
+  async function handlePostSend(
+    index,
+    total,
+    sleepDuration,
+    sleepSeconds,
+    useNewChat,
+    previousButtons,
+    options
+  ) {
+    const progressCurrent =
+      options && Number.isFinite(options.progressCurrent) ? options.progressCurrent : index + 1;
+    const progressTotal = options && Number.isFinite(options.progressTotal) ? options.progressTotal : total;
+    const filenameBaseBuilder =
+      options && typeof options.filenameBaseBuilder === "function"
+        ? options.filenameBaseBuilder
+        : undefined;
+
     if (useNewChat) {
       console.log("Waiting for image download button...");
       const newButtons = await waitForDownloadButtonVisible(undefined, undefined, previousButtons);
-      const clickedCount = await clickDownloadButtons(newButtons);
-      console.log(`Image downloaded (${index + 1}/${total}) via ${clickedCount} click(s).`);
+      const clickedCount = await clickDownloadButtons(newButtons, undefined, {
+        filenameBaseBuilder
+      });
+      console.log(`Image downloaded (${progressCurrent}/${progressTotal}) via ${clickedCount} click(s).`);
 
       if (index < total - 1) {
         await openNewChat();
@@ -421,12 +584,14 @@
     }
 
     const selectedMessages = messages.slice(fromIndex, toIndexExclusive);
+    const lastIndex = toIndexExclusive - 1;
 
     for (let i = 0; i < selectedMessages.length; i++) {
+      const absoluteIndex = fromIndex + i;
       const fullPrompt = `${prefixText}${selectedMessages[i]}${postfixText}`;
       const previousButtons = useNewChat ? new Set(getDownloadButtons()) : undefined;
       await sendMessage(fullPrompt);
-      console.log(`Message sent (${i + 1}/${selectedMessages.length}).`);
+      console.log(`Message sent (${absoluteIndex}/${lastIndex}).`);
 
       try {
         await handlePostSend(
@@ -435,7 +600,15 @@
           sleepDuration,
           sleepSeconds,
           useNewChat,
-          previousButtons
+          previousButtons,
+          {
+            progressCurrent: absoluteIndex,
+            progressTotal: lastIndex,
+            filenameBaseBuilder: useNewChat
+              ? (downloadIndex) =>
+                  downloadIndex === 0 ? `${absoluteIndex}` : `${absoluteIndex}_${downloadIndex}`
+              : undefined
+          }
         );
       } catch (error) {
         if (!continueOnImageDownloadTimeout || !isImageDownloadTimeoutError(error)) {
@@ -444,10 +617,10 @@
 
         const failedFilename = downloadTextFile(
           fullPrompt,
-          `failed_prompt_${i + 1}_of_${selectedMessages.length}`
+          `failed_prompt_${absoluteIndex}_of_${lastIndex}`
         );
         console.error(
-          `Timed out waiting for image download button (${i + 1}/${selectedMessages.length}). ` +
+          `Timed out waiting for image download button (${absoluteIndex}/${lastIndex}). ` +
             `Saved failed prompt to "${failedFilename}". Continuing.`,
           error
         );
