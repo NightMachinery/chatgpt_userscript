@@ -641,6 +641,9 @@
     return index;
   }
 
+  // options:
+  // - continueOnImageDownloadTimeout: in new_chat_image mode only, save the failed prompt
+  //   to a .txt file and continue to the next item after the final timeout instead of throwing.
   async function sendMessageRepeatedlyArray(msgs, sleep, sep, prefix, postfix, from, to, mode, options) {
     const sleepSeconds = sleep ?? 30;
     const sleepDuration = sleepSeconds * 1000;
