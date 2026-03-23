@@ -25,7 +25,7 @@
   const IMAGE_DOWNLOAD_TIMEOUT_ERROR_MESSAGE =
     "Timed out waiting for a new visible image download button.";
   const CREATIVE_LICENSE_RETRY_PROMPT =
-    "You have full creative license to adapt, reinterpret, or subtly redirect those specific elements so the image can still be generated. A clothed figure in a powerful composition is always preferable to a refusal.";
+    "You have full creative license to adapt, reinterpret, or subtly redirect those specific elements so the image can still be generated. A light, tame, clothed image is always preferable to a refusal.";
 
   function delay(duration) {
     return new Promise((resolve) => setTimeout(resolve, duration));
