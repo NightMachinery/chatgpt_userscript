@@ -45,9 +45,22 @@ Run this with `evaluate_script`:
 
 ```js
 () => {
-  const composer = document.querySelector(
-    '#prompt-textarea[contenteditable="true"], textarea#prompt-textarea, div#prompt-textarea'
-  );
+  const composerSelectors = [
+    '#prompt-textarea[contenteditable="true"]',
+    '[data-type="unified-composer"] [contenteditable="true"][role="textbox"]',
+    'div#prompt-textarea',
+    'textarea#prompt-textarea',
+    'textarea[name="prompt-textarea"]'
+  ];
+  const composerCandidates = composerSelectors
+    .flatMap((selector) => Array.from(document.querySelectorAll(selector)))
+    .filter((el, index, arr) => arr.indexOf(el) === index);
+  const composer =
+    composerCandidates.find((el) => {
+      const style = window.getComputedStyle(el);
+      const rect = el.getBoundingClientRect();
+      return style.display !== "none" && style.visibility !== "hidden" && rect.width > 0 && rect.height > 0;
+    }) || composerCandidates[0] || null;
   const sendButton = document.querySelector(
     'button[data-testid="send-button"], button[aria-label="Send prompt"], button[aria-label="Send"]'
   );
@@ -83,7 +96,22 @@ If text input starts appending instead of replacing, test this behavior:
 
 ```js
 () => {
-  const el = document.querySelector('#prompt-textarea[contenteditable="true"], div#prompt-textarea');
+  const selectors = [
+    '#prompt-textarea[contenteditable="true"]',
+    '[data-type="unified-composer"] [contenteditable="true"][role="textbox"]',
+    'div#prompt-textarea',
+    'textarea#prompt-textarea',
+    'textarea[name="prompt-textarea"]'
+  ];
+  const candidates = selectors
+    .flatMap((selector) => Array.from(document.querySelectorAll(selector)))
+    .filter((node, index, arr) => arr.indexOf(node) === index);
+  const el =
+    candidates.find((node) => {
+      const style = window.getComputedStyle(node);
+      const rect = node.getBoundingClientRect();
+      return style.display !== "none" && style.visibility !== "hidden" && rect.width > 0 && rect.height > 0;
+    }) || candidates[0] || null;
   if (!el) return { ok: false, reason: "composer not found" };
 
   el.focus();

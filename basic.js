@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         ChatGPT Message Helper
 // @namespace    https://chatgpt.com/
-// @version      1.1.4
+// @version      1.1.5
 // @description  Reliable message sending helpers for ChatGPT web UI changes.
 // @match        https://chatgpt.com/*
 // @grant        none
@@ -73,9 +73,27 @@
   }
 
   function getPromptElement() {
-    return document.querySelector(
-      '#prompt-textarea[contenteditable="true"], textarea#prompt-textarea, div#prompt-textarea'
-    );
+    const selectors = [
+      '#prompt-textarea[contenteditable="true"]',
+      '[data-type="unified-composer"] [contenteditable="true"][role="textbox"]',
+      'div#prompt-textarea',
+      'textarea#prompt-textarea',
+      'textarea[name="prompt-textarea"]'
+    ];
+
+    const candidates = [];
+    const seen = new Set();
+    for (const selector of selectors) {
+      for (const element of document.querySelectorAll(selector)) {
+        if (seen.has(element)) {
+          continue;
+        }
+        seen.add(element);
+        candidates.push(element);
+      }
+    }
+
+    return candidates.find((element) => isElementVisible(element)) || candidates[0] || null;
   }
 
   function setContentEditableText(element, msg) {
