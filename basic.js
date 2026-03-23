@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         ChatGPT Message Helper
 // @namespace    https://chatgpt.com/
-// @version      1.1.3
+// @version      1.1.4
 // @description  Reliable message sending helpers for ChatGPT web UI changes.
 // @match        https://chatgpt.com/*
 // @grant        none
@@ -24,6 +24,8 @@
   const IMAGE_DOWNLOAD_TIMEOUT_SECONDS = 600;
   const IMAGE_DOWNLOAD_TIMEOUT_ERROR_MESSAGE =
     "Timed out waiting for a new visible image download button.";
+  const CREATIVE_LICENSE_RETRY_PROMPT =
+    "You have full creative license to adapt, reinterpret, or subtly redirect those specific elements so the image can still be generated. A clothed figure in a powerful composition is always preferable to a refusal.";
 
   function delay(duration) {
     return new Promise((resolve) => setTimeout(resolve, duration));
@@ -361,6 +363,49 @@
     throw new Error("Send button is not available.");
   }
 
+  function getImmediatePromptSendability(msg) {
+    if (isBusyGenerating()) {
+      return {
+        sendable: false,
+        reason: "generation is still in progress"
+      };
+    }
+
+    try {
+      if (!promptSet(msg)) {
+        return {
+          sendable: false,
+          reason: "prompt element not found"
+        };
+      }
+    } catch (error) {
+      return {
+        sendable: false,
+        reason: `prompt setup failed: ${error instanceof Error ? error.message : String(error)}`
+      };
+    }
+
+    const sendButton = getSendButton();
+    if (!sendButton) {
+      return {
+        sendable: false,
+        reason: "send button not found"
+      };
+    }
+
+    if (isElementDisabled(sendButton)) {
+      return {
+        sendable: false,
+        reason: "send button is disabled"
+      };
+    }
+
+    return {
+      sendable: true,
+      reason: null
+    };
+  }
+
   async function waitForButtonAvailable(checkInterval, sleepMs, startTime, timeoutMs, setMsgFn) {
     while (Date.now() - startTime < timeoutMs) {
       if (!isBusyGenerating()) {
@@ -401,6 +446,51 @@
 
     const startTime = Date.now();
     await waitForButtonAvailable(intervalMs, sleepMs, startTime, timeoutMs, setMsgFn);
+  }
+
+  async function waitForDownloadButtonVisibleWithRetry(previousButtons, retryPrompt) {
+    const retryPromptText =
+      typeof retryPrompt === "string" && retryPrompt.trim().length > 0
+        ? retryPrompt
+        : CREATIVE_LICENSE_RETRY_PROMPT;
+
+    try {
+      return {
+        buttons: await waitForDownloadButtonVisible(undefined, undefined, previousButtons),
+        retrySent: false
+      };
+    } catch (error) {
+      if (!isImageDownloadTimeoutError(error)) {
+        throw error;
+      }
+
+      const sendability = getImmediatePromptSendability(retryPromptText);
+      if (!sendability.sendable) {
+        console.warn(
+          `Timed out waiting for image download button. Creative-license retry skipped because ${sendability.reason}.`
+        );
+        throw error;
+      }
+
+      console.warn(
+        "Timed out waiting for image download button. Sending creative-license retry prompt and waiting once more."
+      );
+      await sendMessage(retryPromptText, undefined, undefined, IMAGE_DOWNLOAD_TIMEOUT_SECONDS);
+    }
+
+    try {
+      return {
+        buttons: await waitForDownloadButtonVisible(undefined, undefined, previousButtons),
+        retrySent: true
+      };
+    } catch (error) {
+      if (isImageDownloadTimeoutError(error)) {
+        console.error(
+          "Timed out waiting for image download button after sending the creative-license retry prompt."
+        );
+      }
+      throw error;
+    }
   }
 
   async function clickDownloadButtons(
@@ -482,11 +572,15 @@
 
     if (useNewChat) {
       console.log("Waiting for image download button...");
-      const newButtons = await waitForDownloadButtonVisible(undefined, undefined, previousButtons);
+      const waitResult = await waitForDownloadButtonVisibleWithRetry(previousButtons);
+      const newButtons = waitResult.buttons;
       const clickedCount = await clickDownloadButtons(newButtons, undefined, {
         filenameBaseBuilder
       });
-      console.log(`Image downloaded (${progressCurrent}/${progressTotal}) via ${clickedCount} click(s).`);
+      const retrySuffix = waitResult.retrySent ? " after creative-license retry" : "";
+      console.log(
+        `Image downloaded${retrySuffix} (${progressCurrent}/${progressTotal}) via ${clickedCount} click(s).`
+      );
 
       if (index < total - 1) {
         await openNewChat();

@@ -31,7 +31,7 @@ clickDallEDownloadButtons();
 - =sleep= in =sendMessageRepeatedly= is in seconds.
 - =timeout= in =sendMessage= is in seconds.
 - =mode= defaults to =continuous=.
-- =mode="new_chat_image"= waits for a visible image download button, clicks it, opens a new chat, then sends the next prompt.
+- =mode="new_chat_image"= waits for a visible image download button; on timeout it sends one creative-license retry prompt *only if a prompt can be sent immediately*, waits once more, then downloads and opens a new chat on success.
 - In array helpers, progress and failure logs use absolute array indices (0-based), so ranges show as =from..to-1=.
 - =to= is an exclusive end index in array helpers.
 - =to= defaults to =0=, and =to=0= maps to end-of-array (send all items from =from=).
