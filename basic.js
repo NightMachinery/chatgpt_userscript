@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         ChatGPT Message Helper
 // @namespace    https://chatgpt.com/
-// @version      1.1.5
+// @version      1.1.6
 // @description  Reliable message sending helpers for ChatGPT web UI changes.
 // @match        https://chatgpt.com/*
 // @grant        none
@@ -381,49 +381,6 @@
     throw new Error("Send button is not available.");
   }
 
-  function getImmediatePromptSendability(msg) {
-    if (isBusyGenerating()) {
-      return {
-        sendable: false,
-        reason: "generation is still in progress"
-      };
-    }
-
-    try {
-      if (!promptSet(msg)) {
-        return {
-          sendable: false,
-          reason: "prompt element not found"
-        };
-      }
-    } catch (error) {
-      return {
-        sendable: false,
-        reason: `prompt setup failed: ${error instanceof Error ? error.message : String(error)}`
-      };
-    }
-
-    const sendButton = getSendButton();
-    if (!sendButton) {
-      return {
-        sendable: false,
-        reason: "send button not found"
-      };
-    }
-
-    if (isElementDisabled(sendButton)) {
-      return {
-        sendable: false,
-        reason: "send button is disabled"
-      };
-    }
-
-    return {
-      sendable: true,
-      reason: null
-    };
-  }
-
   async function waitForButtonAvailable(checkInterval, sleepMs, startTime, timeoutMs, setMsgFn) {
     while (Date.now() - startTime < timeoutMs) {
       if (!isBusyGenerating()) {
@@ -482,16 +439,8 @@
         throw error;
       }
 
-      const sendability = getImmediatePromptSendability(retryPromptText);
-      if (!sendability.sendable) {
-        console.warn(
-          `Timed out waiting for image download button. Creative-license retry skipped because ${sendability.reason}.`
-        );
-        throw error;
-      }
-
       console.warn(
-        "Timed out waiting for image download button. Sending creative-license retry prompt and waiting once more."
+        "Timed out waiting for image download button. Sending creative-license retry prompt and waiting for the composer to become sendable."
       );
       await sendMessage(retryPromptText, undefined, undefined, IMAGE_DOWNLOAD_TIMEOUT_SECONDS);
     }
