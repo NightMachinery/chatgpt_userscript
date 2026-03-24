@@ -151,15 +151,16 @@ When `mode === "new_chat_image"` in repeated send helpers, current flow is:
 
 1. send prompt
 2. wait until a visible image download button appears for the newest response
-3. if that wait times out, send one creative-license retry prompt using the normal send flow so the helper can wait for the composer/send button
-4. wait one more full image-download timeout
-5. click the download button(s) once they appear
-6. trigger new chat shortcut (`fireShortcut("o", "KeyO", { shift: true })`)
-7. wait briefly, then continue
+3. if that wait times out, send the next retry prompt using the normal send flow so the helper can wait for the composer/send button
+4. repeat the image-download wait after each retry prompt until an image appears or the retry queue is exhausted
+5. the default retry queue is the creative-license guidance prompt followed by `"Generate!"`
+6. click the download button(s) once they appear
+7. trigger new chat shortcut (`fireShortcut("o", "KeyO", { shift: true })`)
+8. wait briefly, then continue
 
 If this breaks, inspect the download selector and shortcut dispatch behavior.
 
-The retry prompt now reuses `sendMessage(...)`, so it waits for the composer/send button instead of requiring immediate sendability at the exact timeout moment.
+Retry prompts reuse `sendMessage(...)`, so each one waits for the composer/send button instead of requiring immediate sendability at the exact timeout moment.
 
 ## Array Range Semantics
 
