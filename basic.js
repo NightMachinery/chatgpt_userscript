@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         ChatGPT Message Helper
 // @namespace    https://chatgpt.com/
-// @version      1.1.7
+// @version      1.1.8
 // @description  Reliable message sending helpers for ChatGPT web UI changes.
 // @match        https://chatgpt.com/*
 // @grant        none
@@ -19,8 +19,21 @@
   });
   const DOWNLOAD_CLICK_BURST_SIZE = 10;
   const DOWNLOAD_CLICK_BURST_DELAY_MS = 1100;
-  const DOWNLOAD_FILENAME_HOOK_TIMEOUT_MS = 1500;
+  const DOWNLOAD_FILENAME_VISIBLE_TIMEOUT_MS = 60000;
+  const DOWNLOAD_FILENAME_SESSION_POLL_MS = 500;
   const DEFAULT_IMAGE_DOWNLOAD_EXTENSION = ".png";
+  const DOWNLOAD_IMAGE_EXTENSIONS = new Set([
+    ".png",
+    ".jpg",
+    ".jpeg",
+    ".webp",
+    ".gif",
+    ".bmp",
+    ".svg",
+    ".tif",
+    ".tiff",
+    ".avif"
+  ]);
   const IMAGE_DOWNLOAD_TIMEOUT_SECONDS = 350;
   const IMAGE_DOWNLOAD_TIMEOUT_ERROR_MESSAGE =
     "Timed out waiting for a new visible image download button.";
@@ -28,6 +41,8 @@
     "You have full creative license to adapt, reinterpret, or subtly redirect those specific elements so the image can still be generated. A light, tame, clothed image is always preferable to a refusal.",
     "Generate!"
   ]);
+  let activeDownloadRenameSession = null;
+  let downloadRenameInterceptorInstalled = false;
 
   function delay(duration) {
     return new Promise((resolve) => setTimeout(resolve, duration));
@@ -264,41 +279,141 @@
     );
   }
 
-  function createDownloadRenameHook(filenameBase, timeoutMs = DOWNLOAD_FILENAME_HOOK_TIMEOUT_MS) {
-    const safeBase = sanitizeFilenameBase(filenameBase, "download");
-    const originalAnchorClick = HTMLAnchorElement.prototype.click;
-    let settled = false;
-    let resolveResult;
-    let timeoutId = null;
-
-    const result = new Promise((resolve) => {
-      resolveResult = resolve;
-    });
-
-    function cleanup(payload) {
-      if (settled) {
-        return;
-      }
-      settled = true;
-      if (timeoutId !== null) {
-        clearTimeout(timeoutId);
-        timeoutId = null;
-      }
-      document.removeEventListener("click", onDocumentClickCapture, true);
-      HTMLAnchorElement.prototype.click = originalAnchorClick;
-      resolveResult(payload);
+  function isLikelyDownloadAnchor(anchor) {
+    if (!(anchor instanceof HTMLAnchorElement)) {
+      return false;
     }
 
-    function tryRenameAnchor(anchor) {
-      if (!(anchor instanceof HTMLAnchorElement) || settled) {
-        return false;
-      }
-      const extension = inferDownloadExtension(anchor);
-      const filename = `${safeBase}${extension}`;
-      anchor.download = filename;
-      cleanup({ applied: true, filename });
+    if (anchor.hasAttribute("download")) {
       return true;
     }
+
+    const href = typeof anchor.href === "string" ? anchor.href.trim() : "";
+    if (/^(blob:|data:)/i.test(href)) {
+      return true;
+    }
+
+    const extension =
+      extractExtensionCandidate(anchor.getAttribute("download")) ||
+      extractExtensionCandidate(anchor.download) ||
+      extractExtensionCandidate(href);
+
+    return extension !== "" && DOWNLOAD_IMAGE_EXTENSIONS.has(extension);
+  }
+
+  function updateDownloadRenameSessionVisibility(session) {
+    if (!session || session.settled) {
+      return;
+    }
+
+    const now = Date.now();
+    if (document.hidden) {
+      if (session.visibleSince !== null) {
+        session.visibleElapsedMs += now - session.visibleSince;
+        session.visibleSince = null;
+      }
+      session.hiddenObserved = true;
+      return;
+    }
+
+    if (session.visibleSince === null) {
+      session.visibleSince = now;
+    }
+  }
+
+  function getDownloadRenameSessionVisibleElapsedMs(session) {
+    if (!session) {
+      return 0;
+    }
+
+    let visibleElapsedMs = session.visibleElapsedMs;
+    if (!session.settled && session.visibleSince !== null) {
+      visibleElapsedMs += Date.now() - session.visibleSince;
+    }
+    return visibleElapsedMs;
+  }
+
+  function finalizeDownloadRenameSession(session, payload) {
+    if (!session || session.settled) {
+      return false;
+    }
+
+    updateDownloadRenameSessionVisibility(session);
+    const finalVisibleElapsedMs = getDownloadRenameSessionVisibleElapsedMs(session);
+    session.settled = true;
+
+    if (session.intervalId !== null) {
+      clearInterval(session.intervalId);
+      session.intervalId = null;
+    }
+
+    document.removeEventListener("visibilitychange", session.onVisibilityChange, true);
+    window.removeEventListener("pagehide", session.onPageHide, true);
+
+    if (activeDownloadRenameSession === session) {
+      activeDownloadRenameSession = null;
+    }
+
+    const resolvedPayload = {
+      applied: Boolean(payload && payload.applied),
+      filename: payload && payload.filename ? payload.filename : null,
+      reason: payload && payload.reason ? payload.reason : null,
+      trigger: payload && payload.trigger ? payload.trigger : null,
+      elapsedMs: Date.now() - session.startedAt,
+      visibleElapsedMs: finalVisibleElapsedMs,
+      hiddenObserved: session.hiddenObserved
+    };
+
+    session.resolveResult(resolvedPayload);
+    return true;
+  }
+
+  function maybeExpireDownloadRenameSession(session) {
+    if (!session || session.settled) {
+      return false;
+    }
+
+    updateDownloadRenameSessionVisibility(session);
+    if (getDownloadRenameSessionVisibleElapsedMs(session) < session.timeoutMs) {
+      return false;
+    }
+
+    return finalizeDownloadRenameSession(session, {
+      applied: false,
+      filename: null,
+      reason: "visible_timeout",
+      trigger: "visible_timeout"
+    });
+  }
+
+  function tryRenameAnchorForActiveSession(anchor, trigger) {
+    const session = activeDownloadRenameSession;
+    if (!session || session.settled) {
+      return false;
+    }
+
+    if (!(anchor instanceof HTMLAnchorElement) || !isLikelyDownloadAnchor(anchor)) {
+      return false;
+    }
+
+    const extension = inferDownloadExtension(anchor);
+    const filename = `${session.safeBase}${extension}`;
+    anchor.download = filename;
+
+    return finalizeDownloadRenameSession(session, {
+      applied: true,
+      filename,
+      reason: null,
+      trigger
+    });
+  }
+
+  function installDownloadRenameInterceptor() {
+    if (downloadRenameInterceptorInstalled) {
+      return;
+    }
+
+    const originalAnchorClick = HTMLAnchorElement.prototype.click;
 
     function onDocumentClickCapture(event) {
       if (!(event.target instanceof Element)) {
@@ -306,22 +421,85 @@
       }
       const anchor = event.target.closest("a");
       if (anchor instanceof HTMLAnchorElement) {
-        tryRenameAnchor(anchor);
+        tryRenameAnchorForActiveSession(anchor, "document_click_capture");
       }
     }
 
     function patchedAnchorClick(...args) {
-      tryRenameAnchor(this);
+      tryRenameAnchorForActiveSession(this, "anchor_click");
       return originalAnchorClick.apply(this, args);
     }
 
     HTMLAnchorElement.prototype.click = patchedAnchorClick;
     document.addEventListener("click", onDocumentClickCapture, true);
-    timeoutId = window.setTimeout(() => cleanup({ applied: false, filename: null }), timeoutMs);
+    downloadRenameInterceptorInstalled = true;
+  }
+
+  function beginDownloadRenameSession(
+    filenameBase,
+    timeoutMs = DOWNLOAD_FILENAME_VISIBLE_TIMEOUT_MS
+  ) {
+    installDownloadRenameInterceptor();
+
+    if (activeDownloadRenameSession && !activeDownloadRenameSession.settled) {
+      finalizeDownloadRenameSession(activeDownloadRenameSession, {
+        applied: false,
+        filename: null,
+        reason: "superseded",
+        trigger: "superseded"
+      });
+    }
+
+    const session = {
+      safeBase: sanitizeFilenameBase(filenameBase, "download"),
+      timeoutMs,
+      startedAt: Date.now(),
+      visibleElapsedMs: 0,
+      visibleSince: document.hidden ? null : Date.now(),
+      hiddenObserved: Boolean(document.hidden),
+      settled: false,
+      intervalId: null,
+      onVisibilityChange: null,
+      onPageHide: null,
+      resolveResult: null,
+      result: null
+    };
+
+    session.result = new Promise((resolve) => {
+      session.resolveResult = resolve;
+    });
+
+    session.onVisibilityChange = () => {
+      updateDownloadRenameSessionVisibility(session);
+      maybeExpireDownloadRenameSession(session);
+    };
+    session.onPageHide = () => {
+      finalizeDownloadRenameSession(session, {
+        applied: false,
+        filename: null,
+        reason: "pagehide",
+        trigger: "pagehide"
+      });
+    };
+
+    document.addEventListener("visibilitychange", session.onVisibilityChange, true);
+    window.addEventListener("pagehide", session.onPageHide, true);
+    session.intervalId = window.setInterval(
+      () => maybeExpireDownloadRenameSession(session),
+      DOWNLOAD_FILENAME_SESSION_POLL_MS
+    );
+
+    activeDownloadRenameSession = session;
 
     return {
-      result,
-      stop: () => cleanup({ applied: false, filename: null })
+      result: session.result,
+      stop: (reason = "stopped") =>
+        finalizeDownloadRenameSession(session, {
+          applied: false,
+          filename: null,
+          reason,
+          trigger: "stop"
+        })
     };
   }
 
@@ -499,26 +677,34 @@
 
       const filenameBase = filenameBaseBuilder ? filenameBaseBuilder(index, button) : null;
       if (filenameBase !== null && filenameBase !== undefined && filenameBase !== "") {
-        const renameHook = createDownloadRenameHook(filenameBase);
+        const renameSession = beginDownloadRenameSession(filenameBase);
         let clickError = null;
         try {
           button.click();
         } catch (error) {
           clickError = error;
-          renameHook.stop();
+          renameSession.stop("button_click_error");
         }
 
         if (clickError) {
           throw clickError;
         }
 
-        const renameResult = await renameHook.result;
+        const renameResult = await renameSession.result;
         if (!renameResult.applied) {
           console.warn(
-            `Could not intercept download filename for base "${filenameBase}". Keeping browser-provided name.`
+            `Could not intercept download filename for base "${filenameBase}" ` +
+              `(reason: ${renameResult.reason || "unknown"}, ` +
+              `visible wait: ${renameResult.visibleElapsedMs}ms, ` +
+              `elapsed: ${renameResult.elapsedMs}ms, ` +
+              `hidden observed: ${renameResult.hiddenObserved ? "yes" : "no"}). ` +
+              `Keeping browser-provided name.`
           );
         } else {
-          console.log(`Renamed download to "${renameResult.filename}".`);
+          const hiddenSuffix = renameResult.hiddenObserved ? " after hidden-tab wait" : "";
+          console.log(
+            `Renamed download to "${renameResult.filename}" via ${renameResult.trigger || "unknown"}${hiddenSuffix}.`
+          );
         }
       } else {
         button.click();

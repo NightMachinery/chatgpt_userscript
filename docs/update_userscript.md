@@ -154,13 +154,14 @@ When `mode === "new_chat_image"` in repeated send helpers, current flow is:
 3. if that wait times out, send the next retry prompt using the normal send flow so the helper can wait for the composer/send button
 4. repeat the image-download wait after each retry prompt until an image appears or the retry queue is exhausted
 5. the default retry queue is the creative-license guidance prompt followed by `"Generate!"`
-6. click the download button(s) once they appear
+6. click the download button(s) once they appear; when filename normalization is enabled, a global anchor interceptor keeps a rename session active for up to `DOWNLOAD_FILENAME_VISIBLE_TIMEOUT_MS` of visible page time
 7. trigger new chat shortcut (`fireShortcut("o", "KeyO", { shift: true })`)
 8. wait briefly, then continue
 
 If this breaks, inspect the download selector and shortcut dispatch behavior.
 
 Retry prompts reuse `sendMessage(...)`, so each one waits for the composer/send button instead of requiring immediate sendability at the exact timeout moment.
+The download rename session no longer uses a short wall-clock timeout; hidden/background time pauses the rename timeout budget instead of consuming it.
 
 ## Array Range Semantics
 
@@ -213,6 +214,7 @@ Avoid utility-class selectors like `div.group-hover\\/dalle-image\\:visible butt
 Prefer stable attributes (`data-testid`, `aria-label`) whenever possible.
 Operational note: in some chats, image controls are only reliably discoverable after manually scrolling to the top of the chat before running `clickDallEDownloadButtons()`.
 The downloader now throttles click bursts: after every 10 clicks it waits 1.1 seconds before continuing.
+Filename normalization is still best-effort under `@grant none`, but the interceptor now stays installed globally and keeps one active rename session alive across hidden-tab waits. Tune `DOWNLOAD_FILENAME_VISIBLE_TIMEOUT_MS` if a visible, foreground download path still takes unusually long.
 
 ## Download Smoke Test Snippet
 
