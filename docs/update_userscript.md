@@ -151,17 +151,19 @@ When `mode === "new_chat_image"` in repeated send helpers, current flow is:
 
 1. send prompt
 2. wait until a visible generated image appears for the newest response
-3. if that wait times out, send the next retry prompt using the normal send flow so the helper can wait for the composer/send button
-4. repeat the generated-image wait after each retry prompt until an image appears or the retry queue is exhausted
-5. the default retry queue is the creative-license guidance prompt followed by `"Generate!"`
-6. if ChatGPT instead replies with an image-limit reset message (`...limit resets in ...`), parse the duration, log the wait, wait through the reset window, and then resume
-7. fetch the generated image asset URL(s) directly from the visible image tile(s) and trigger downloads
-8. trigger new chat shortcut (`fireShortcut("o", "KeyO", { shift: true })`)
-9. wait briefly, then continue
+3. if ChatGPT instead replies with an image-limit reset message (`...limit resets in ...`), parse the duration, log the wait, wait through the reset window, then retry by opening a new chat and resending the original prompt
+4. otherwise, if the image wait times out, run the next retry step
+5. retry steps can be normal prompts or the special sentinel `MAGIC_RETRY`
+6. `MAGIC_RETRY` means: open a new chat and resend the original prompt
+7. the default retry queue is `MAGIC_RETRY`, then the creative-license guidance prompt, then `"Generate!"`
+8. fetch the generated image asset URL(s) directly from the visible image tile(s) and trigger downloads
+9. trigger new chat shortcut (`fireShortcut("o", "KeyO", { shift: true })`)
+10. wait briefly, then continue
 
 If this breaks, inspect the generated-image tile selector, the asset URL extraction, and the shortcut dispatch behavior.
 
 Retry prompts reuse `sendMessage(...)`, so each one waits for the composer/send button instead of requiring immediate sendability at the exact timeout moment.
+`MAGIC_RETRY` uses `openNewChat()` plus the original prompt instead of a follow-up message in the same chat.
 
 ## Array Range Semantics
 
@@ -233,6 +235,7 @@ Current implementation looks for assistant text that:
 - includes parseable time units like hours / minutes / seconds
 
 When detected, the script logs the message, waits for the parsed duration plus a one-minute buffer, logs progress roughly once per minute, and then resumes.
+After that wait, the current behavior is to run a fresh new-chat retry of the original prompt rather than consuming the ordinary fallback retry queue.
 For manual debugging, `window.waitForImageGenerationLimitReset(previousAssistantTurnCount=0)` is exported.
 
 ## Download Smoke Test Snippet

@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         ChatGPT Message Helper
 // @namespace    https://chatgpt.com/
-// @version      1.1.11
+// @version      1.1.12
 // @description  Reliable message sending helpers for ChatGPT web UI changes.
 // @match        https://chatgpt.com/*
 // @grant        none
@@ -44,7 +44,9 @@
   ]);
   const IMAGE_DOWNLOAD_TIMEOUT_SECONDS = 350;
   const IMAGE_DOWNLOAD_TIMEOUT_ERROR_MESSAGE = "Timed out waiting for a new visible generated image.";
-  const CREATIVE_LICENSE_RETRY_PROMPTS = Object.freeze([
+  const MAGIC_RETRY_PROMPT = "MAGIC_RETRY";
+  const DEFAULT_IMAGE_RETRY_PROMPTS = Object.freeze([
+    MAGIC_RETRY_PROMPT,
     "You have full creative license to adapt, reinterpret, or subtly redirect those specific elements so the image can still be generated. A light, tame, clothed image is always preferable to a refusal.",
     "Generate!"
   ]);
@@ -502,24 +504,36 @@
         : {
             assistantTurnCount: 0
           };
+    let trackedPreviousButtons = previousButtons;
     let deadline = Date.now() + timeoutMs;
 
     while (Date.now() < deadline) {
-      const buttons = getNewDownloadButtons(previousButtons);
+      const buttons = getNewDownloadButtons(trackedPreviousButtons);
       if (buttons.length > 0) {
         return buttons;
       }
 
       const imageLimitState = getImageGenerationLimitResetState(waitOptions.assistantTurnCount);
       if (imageLimitState) {
+        const recoveryStart = Date.now();
         waitOptions.assistantTurnCount = imageLimitState.turnIndex + 1;
-        const waitStart = Date.now();
         const waitResult = await waitForImageGenerationLimitResetState(imageLimitState);
         waitOptions.assistantTurnCount = Math.max(
           waitOptions.assistantTurnCount,
           waitResult.assistantTurnCount
         );
-        deadline += Date.now() - waitStart;
+
+        if (typeof waitOptions.onLimitRecovered === "function") {
+          const recoveryResult = await waitOptions.onLimitRecovered(waitResult);
+          if (recoveryResult && recoveryResult.previousButtons instanceof Set) {
+            trackedPreviousButtons = recoveryResult.previousButtons;
+          }
+          if (recoveryResult && Number.isFinite(recoveryResult.assistantTurnCount)) {
+            waitOptions.assistantTurnCount = recoveryResult.assistantTurnCount;
+          }
+        }
+
+        deadline += Date.now() - recoveryStart;
         continue;
       }
 
@@ -968,17 +982,54 @@
     await waitForButtonAvailable(intervalMs, sleepMs, startTime, timeoutMs, setMsgFn);
   }
 
+  function normalizeRetryPromptValue(prompt) {
+    const normalizedPrompt = prompt === undefined || prompt === null ? "" : String(prompt).trim();
+    if (normalizedPrompt.length === 0) {
+      return "";
+    }
+
+    return /^magic(?:_|\s*)retry$/i.test(normalizedPrompt)
+      ? MAGIC_RETRY_PROMPT
+      : normalizedPrompt;
+  }
+
+  function isMagicRetryPrompt(prompt) {
+    return normalizeRetryPromptValue(prompt) === MAGIC_RETRY_PROMPT;
+  }
+
+  function captureDownloadTargetKeys() {
+    return new Set(getDownloadButtons().map((button) => getDownloadTargetKey(button)).filter(Boolean));
+  }
+
+  async function runMagicRetry(originalPrompt) {
+    const normalizedPrompt = String(originalPrompt ?? "").trim();
+    if (normalizedPrompt.length === 0) {
+      throw new Error("MAGIC_RETRY requires the original prompt.");
+    }
+
+    console.warn("[image-retry] MAGIC_RETRY: opening a new chat and resending the original prompt.");
+    await openNewChat();
+    const assistantTurnCount = getAssistantTurnElements().length;
+    const previousButtons = captureDownloadTargetKeys();
+    await sendMessage(normalizedPrompt, undefined, undefined, IMAGE_DOWNLOAD_TIMEOUT_SECONDS);
+
+    return {
+      assistantTurnCount,
+      previousButtons
+    };
+  }
+
   function normalizeRetryPrompts(retryPrompts) {
     const sourcePrompts = Array.isArray(retryPrompts)
       ? retryPrompts
       : typeof retryPrompts === "string"
         ? [retryPrompts]
-        : CREATIVE_LICENSE_RETRY_PROMPTS;
+        : DEFAULT_IMAGE_RETRY_PROMPTS;
     const normalizedPrompts = sourcePrompts
-      .map((prompt) => (prompt === undefined || prompt === null ? "" : String(prompt).trim()))
+      .map((prompt) => normalizeRetryPromptValue(prompt))
       .filter((prompt) => prompt.length > 0);
 
-    return normalizedPrompts.length > 0 ? normalizedPrompts : CREATIVE_LICENSE_RETRY_PROMPTS;
+    return normalizedPrompts.length > 0 ? normalizedPrompts : DEFAULT_IMAGE_RETRY_PROMPTS;
   }
 
   function normalizeMessageBatch(msgs, separator, options) {
@@ -1014,16 +1065,17 @@
         : {
             assistantTurnCount: 0
           };
+    const originalPrompt =
+      waitOptions && waitOptions.originalPrompt !== undefined && waitOptions.originalPrompt !== null
+        ? String(waitOptions.originalPrompt)
+        : "";
+    const sharedWaitOptions = waitOptions;
+    sharedWaitOptions.onLimitRecovered = async () => runMagicRetry(originalPrompt);
 
     while (true) {
       try {
         return {
-          buttons: await waitForDownloadButtonVisible(
-            undefined,
-            undefined,
-            previousButtons,
-            waitOptions
-          ),
+          buttons: await waitForDownloadButtonVisible(undefined, undefined, previousButtons, sharedWaitOptions),
           retryCount
         };
       } catch (error) {
@@ -1034,23 +1086,28 @@
         if (retryCount >= retryPromptQueue.length) {
           if (retryCount > 0) {
             console.error(
-              `Timed out waiting for a generated image after ${retryCount} retry prompt${retryCount === 1 ? "" : "s"}.`
+              `Timed out waiting for a generated image after ${retryCount} retry step${retryCount === 1 ? "" : "s"}.`
             );
           }
           throw error;
         }
 
+        const retryStep = retryPromptQueue[retryCount];
         const nextRetryNumber = retryCount + 1;
-        console.warn(
-          `Timed out waiting for a generated image. Sending retry prompt ${nextRetryNumber}/${retryPromptQueue.length} and waiting for the composer to become sendable.`
-        );
-        await sendMessage(
-          retryPromptQueue[retryCount],
-          undefined,
-          undefined,
-          IMAGE_DOWNLOAD_TIMEOUT_SECONDS
-        );
-        waitOptions.assistantTurnCount = getAssistantTurnElements().length;
+        if (isMagicRetryPrompt(retryStep)) {
+          console.warn(
+            `Timed out waiting for a generated image. Running retry step ${nextRetryNumber}/${retryPromptQueue.length}: MAGIC_RETRY.`
+          );
+          const retryResult = await runMagicRetry(originalPrompt);
+          previousButtons = retryResult.previousButtons;
+          waitOptions.assistantTurnCount = retryResult.assistantTurnCount;
+        } else {
+          console.warn(
+            `Timed out waiting for a generated image. Sending retry step ${nextRetryNumber}/${retryPromptQueue.length} and waiting for the composer to become sendable.`
+          );
+          await sendMessage(retryStep, undefined, undefined, IMAGE_DOWNLOAD_TIMEOUT_SECONDS);
+          waitOptions.assistantTurnCount = getAssistantTurnElements().length;
+        }
         retryCount = nextRetryNumber;
       }
     }
@@ -1159,11 +1216,16 @@
         : undefined;
     const assistantTurnCount =
       options && Number.isFinite(options.assistantTurnCount) ? options.assistantTurnCount : 0;
+    const originalPrompt =
+      options && options.originalPrompt !== undefined && options.originalPrompt !== null
+        ? String(options.originalPrompt)
+        : "";
 
     if (useNewChat) {
       console.log("Waiting for generated image...");
       const waitResult = await waitForDownloadButtonVisibleWithRetry(previousButtons, undefined, {
-        assistantTurnCount
+        assistantTurnCount,
+        originalPrompt
       });
       const newButtons = waitResult.buttons;
       const clickedCount = await clickDownloadButtons(newButtons, undefined, {
@@ -1171,7 +1233,7 @@
       });
       const retrySuffix =
         waitResult.retryCount > 0
-          ? ` after ${waitResult.retryCount} retry prompt${waitResult.retryCount === 1 ? "" : "s"}`
+          ? ` after ${waitResult.retryCount} retry step${waitResult.retryCount === 1 ? "" : "s"}`
           : "";
       console.log(
         `Image downloaded${retrySuffix} (${progressCurrent}/${progressTotal}) via ${clickedCount} download(s).`
@@ -1205,7 +1267,8 @@
       await sendMessage(msg);
       console.log(`Message sent (${i + 1}/${count}).`);
       await handlePostSend(i, count, sleepDuration, sleepSeconds, useNewChat, previousButtons, {
-        assistantTurnCount: previousAssistantTurnCount
+        assistantTurnCount: previousAssistantTurnCount,
+        originalPrompt: msg
       });
     }
   }
@@ -1303,6 +1366,7 @@
             progressCurrent: absoluteIndex,
             progressTotal: lastIndex,
             assistantTurnCount: previousAssistantTurnCount,
+            originalPrompt: fullPrompt,
             filenameBaseBuilder: useNewChat
               ? (downloadIndex) =>
                   downloadIndex === 0 ? `${absoluteIndex}` : `${absoluteIndex}_${downloadIndex}`
@@ -1461,6 +1525,7 @@
   window.sendMessageRepeatedlyArrayChooseFile = sendMessageRepeatedlyArrayChooseFile;
   window.clickDallEDownloadButtons = clickDallEDownloadButtons;
   window.waitForImageGenerationLimitReset = waitForImageGenerationLimitReset;
+  window.MAGIC_RETRY = MAGIC_RETRY_PROMPT;
 
   // Keep these globals so this call style works in console:
   // sendMessageRepeatedly("Thanks, continue.", n=2, sleep=60,)

@@ -19,6 +19,7 @@ The script exposes helpers on =window=:
 - =openNewChat()=
 - =clickDallEDownloadButtons()=
 - =waitForImageGenerationLimitReset(previousAssistantTurnCount=0)=
+- =MAGIC_RETRY=
 
 Examples:
 #+begin_src js
@@ -33,8 +34,9 @@ waitForImageGenerationLimitReset();
 - =sleep= in =sendMessageRepeatedly= is in seconds.
 - =timeout= in =sendMessage= is in seconds.
 - =mode= defaults to =continuous=.
-- =mode="new_chat_image"= waits for a visible generated image; on each timeout it sends the next retry prompt using the normal send wait logic (by default: the creative-license guidance, then =Generate!=), waits again, then downloads and opens a new chat on success.
-- In =new_chat_image= mode, if ChatGPT replies with an image-limit reset message like =You can create more images when the limit resets in ...=, the script detects it, logs the planned delay, waits through the reset window, and then resumes.
+- =mode="new_chat_image"= waits for a visible generated image; on each timeout it runs the next retry step (by default: =MAGIC_RETRY=, then the creative-license guidance, then =Generate!=), waits again, then downloads and opens a new chat on success.
+- =MAGIC_RETRY= means: open a new chat and resend the original image prompt.
+- In =new_chat_image= mode, if ChatGPT replies with an image-limit reset message like =You can create more images when the limit resets in ...=, the script treats that as a special case, waits through the reset window, then retries by opening a new chat and resending the original prompt instead of consuming the fallback retry queue.
 - In array helpers, progress and failure logs use absolute array indices (0-based), so ranges show as =from..to-1=.
 - =to= is an exclusive end index in array helpers.
 - =to= defaults to =0=, and =to=0= maps to end-of-array (send all items from =from=).
@@ -44,6 +46,7 @@ waitForImageGenerationLimitReset();
 - Downloader throttling is built in: after every 10 image downloads, it waits 1.1 seconds before continuing.
 - =clickDallEDownloadButtons()= may require manually scrolling to the top of the chat so the target generated images are mounted/visible.
 - =waitForImageGenerationLimitReset()= is also exported for manual use on the current page; pass a nonzero =previousAssistantTurnCount= if you need to ignore older assistant messages.
+- =MAGIC_RETRY= is exported so it can be used in retry arrays when customizing the image retry flow.
 
 * Maintenance
 For adapting to upstream ChatGPT UI changes with MCP, see:
