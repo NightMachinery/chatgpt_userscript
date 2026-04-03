@@ -17,6 +17,7 @@ The script exposes helpers on =window=:
 - =sendMessageRepeatedlyArray(msgs, sleep, sep, prefix, postfix, from, to, mode)=
 - =sendMessageRepeatedlyArrayChooseFile(sleep, sep, prefix, postfix, from, to, mode)=
 - =openNewChat()=
+- =skipCurrentPrompt()=
 - =clickDallEDownloadButtons()=
 - =waitForImageGenerationLimitReset(previousAssistantTurnCount=0)=
 - =MAGIC_RETRY=
@@ -26,6 +27,7 @@ Examples:
 sendMessage("Hello");
 sendMessageRepeatedly("Thanks, continue.", n=2, sleep=60,);
 sendMessageRepeatedlyArrayChooseFile(sleep=10, sep="\n", prefix="", postfix="", from=0, to=0, mode="new_chat_image");
+skipCurrentPrompt();
 clickDallEDownloadButtons();
 waitForImageGenerationLimitReset();
 #+end_src
@@ -35,6 +37,7 @@ waitForImageGenerationLimitReset();
 - =timeout= in =sendMessage= is in seconds.
 - =mode= defaults to =continuous=.
 - =mode="new_chat_image"= waits for a visible generated image; on each timeout it runs the next retry step (by default: =MAGIC_RETRY=, then the creative-license guidance, then =Generate!=), waits again, then downloads and opens a new chat on success.
+- =skipCurrentPrompt()= works during active array runs only (=sendMessageRepeatedlyArray(...)= / =sendMessageRepeatedlyArrayChooseFile(...)=). It cooperatively skips the current prompt at the next safe checkpoint and advances to the next selected prompt.
 - =MAGIC_RETRY= means: open a new chat and resend the original image prompt.
 - In =new_chat_image= mode, if ChatGPT replies with an image-limit reset message like =You can create more images when the limit resets in ...=, the script treats that as a special case, waits through the reset window, then retries by opening a new chat and resending the original prompt instead of consuming the fallback retry queue.
 - In array helpers, progress and failure logs use absolute array indices (0-based), so ranges show as =from..to-1=.

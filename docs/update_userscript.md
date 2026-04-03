@@ -12,12 +12,14 @@ Keep these APIs working:
 - `sendMessageRepeatedlyArray(msgs, sleep, sep, prefix, postfix, from, to, mode)`
 - `sendMessageRepeatedlyArrayChooseFile(sleep, sep, prefix, postfix, from, to, mode)`
 - `openNewChat()`
+- `skipCurrentPrompt()`
 - `clickDallEDownloadButtons()`
 
 Required call style to preserve:
 
 ```js
 sendMessageRepeatedly("Thanks, continue.", n=2, sleep=60,)
+skipCurrentPrompt()
 ```
 
 ## MCP Workflow
@@ -173,6 +175,18 @@ For `sendMessageRepeatedlyArray(...)` and `sendMessageRepeatedlyArrayChooseFile(
 - `to` is exclusive.
 - `to=0` maps to end-of-array (full range from `from` to the end).
 - `sendMessageRepeatedlyArrayChooseFile(...)` skips entries that are only whitespace after splitting by `sep`; `from`/`to` are applied after that filtering.
+
+## Console Skip Command
+
+`skipCurrentPrompt()` is array-run only.
+It is intended for an active `sendMessageRepeatedlyArray(...)` / `sendMessageRepeatedlyArrayChooseFile(...)` run and cooperatively advances to the next selected prompt at the next safe checkpoint.
+
+Current behavior:
+
+- if no array run is active, it logs a no-op status
+- if the current prompt is still pending (send / retry / image wait / limit wait / download), the current prompt is skipped
+- if the run is in an inter-prompt delay, the delay is shortened and the next prompt starts immediately
+- in `new_chat_image` mode, if the skipped prompt was already sent, the runner opens a fresh new chat before continuing
 
 ## Smoke Test Snippet
 

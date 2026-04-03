@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         ChatGPT Message Helper
 // @namespace    https://chatgpt.com/
-// @version      1.1.12
+// @version      1.1.13
 // @description  Reliable message sending helpers for ChatGPT web UI changes.
 // @match        https://chatgpt.com/*
 // @grant        none
@@ -61,11 +61,250 @@
     "image/tiff": ".tif",
     "image/avif": ".avif"
   });
+  const ARRAY_RUN_PHASES = Object.freeze({
+    PREPARING: "preparing",
+    WAITING_SEND_READY: "waiting_send_ready",
+    WAITING_GENERATED_IMAGE: "waiting_generated_image",
+    WAITING_IMAGE_LIMIT_RESET: "waiting_image_limit_reset",
+    RETRYING_PROMPT: "retrying_prompt",
+    DOWNLOADING_IMAGES: "downloading_images",
+    SLEEPING_BEFORE_NEXT_PROMPT: "sleeping_before_next_prompt",
+    OPENING_NEW_CHAT_AFTER_SUCCESS: "opening_new_chat_after_success",
+    OPENING_NEW_CHAT_AFTER_SKIP: "opening_new_chat_after_skip",
+    OPENING_NEW_CHAT_FOR_RETRY: "opening_new_chat_for_retry",
+    IDLE: "idle"
+  });
   let activeDownloadRenameSession = null;
   let downloadRenameInterceptorInstalled = false;
+  let activeArrayRunController = null;
+  let nextArrayRunId = 1;
 
   function delay(duration) {
     return new Promise((resolve) => setTimeout(resolve, duration));
+  }
+
+  function createArrayRunController({ useNewChat, totalSelected }) {
+    return {
+      runId: nextArrayRunId++,
+      active: true,
+      useNewChat: Boolean(useNewChat),
+      totalSelected: Number.isFinite(totalSelected) ? totalSelected : 0,
+      phase: ARRAY_RUN_PHASES.IDLE,
+      skipRequested: false,
+      skipRequestedAt: null,
+      currentAbsoluteIndex: null,
+      currentPrompt: "",
+      currentPromptSent: false
+    };
+  }
+
+  function summarizePromptForLog(prompt, maxLength = 80) {
+    const normalized = String(prompt ?? "").replace(/\s+/g, " ").trim();
+    if (normalized.length <= maxLength) {
+      return normalized;
+    }
+    return `${normalized.slice(0, Math.max(0, maxLength - 1))}…`;
+  }
+
+  function isActiveArrayRunController(controller) {
+    return Boolean(controller && controller.active && activeArrayRunController === controller);
+  }
+
+  function setArrayRunPhase(controller, phase) {
+    if (!isActiveArrayRunController(controller)) {
+      return;
+    }
+    controller.phase = phase || ARRAY_RUN_PHASES.IDLE;
+  }
+
+  function setArrayRunCurrentPrompt(controller, absoluteIndex, prompt) {
+    if (!isActiveArrayRunController(controller)) {
+      return;
+    }
+    controller.currentAbsoluteIndex = absoluteIndex;
+    controller.currentPrompt = String(prompt ?? "");
+    controller.currentPromptSent = false;
+    controller.skipRequested = false;
+    controller.skipRequestedAt = null;
+    setArrayRunPhase(controller, ARRAY_RUN_PHASES.PREPARING);
+  }
+
+  function markArrayRunCurrentPromptSent(controller) {
+    if (!isActiveArrayRunController(controller)) {
+      return;
+    }
+    controller.currentPromptSent = true;
+  }
+
+  function clearArrayRunSkipRequest(controller) {
+    if (!controller) {
+      return;
+    }
+    controller.skipRequested = false;
+    controller.skipRequestedAt = null;
+  }
+
+  function clearArrayRunCurrentPrompt(controller) {
+    if (!controller) {
+      return;
+    }
+    controller.currentAbsoluteIndex = null;
+    controller.currentPrompt = "";
+    controller.currentPromptSent = false;
+    clearArrayRunSkipRequest(controller);
+    if (isActiveArrayRunController(controller)) {
+      setArrayRunPhase(controller, ARRAY_RUN_PHASES.IDLE);
+    }
+  }
+
+  function finalizeArrayRunController(controller) {
+    if (!controller) {
+      return;
+    }
+    controller.active = false;
+    clearArrayRunCurrentPrompt(controller);
+    if (activeArrayRunController === controller) {
+      activeArrayRunController = null;
+    }
+  }
+
+  function createSkipCurrentPromptError(controller, context) {
+    const error = new Error("Skip current prompt requested.");
+    error.name = "SkipCurrentPromptError";
+    error.skipCurrentPrompt = true;
+    error.context = context || null;
+    error.absoluteIndex = controller && Number.isFinite(controller.currentAbsoluteIndex)
+      ? controller.currentAbsoluteIndex
+      : null;
+    return error;
+  }
+
+  function isSkipCurrentPromptError(error) {
+    return Boolean(
+      error &&
+        typeof error === "object" &&
+        (error.skipCurrentPrompt === true || error.name === "SkipCurrentPromptError")
+    );
+  }
+
+  function throwIfSkipCurrentPromptRequested(controller, context) {
+    if (!isActiveArrayRunController(controller) || !controller.skipRequested) {
+      return;
+    }
+    throw createSkipCurrentPromptError(controller, context);
+  }
+
+  async function delayWithCheckpoint(duration, options) {
+    const totalMs = Math.max(0, Math.trunc(Number(duration) || 0));
+    if (totalMs === 0) {
+      return;
+    }
+
+    const arrayRunController = options && options.arrayRunController;
+    const phase = options && options.phase ? options.phase : null;
+    const sliceMs = Math.max(
+      50,
+      Math.trunc((options && options.sliceMs) || 250)
+    );
+
+    if (phase) {
+      setArrayRunPhase(arrayRunController, phase);
+    }
+
+    let remainingMs = totalMs;
+    while (remainingMs > 0) {
+      throwIfSkipCurrentPromptRequested(arrayRunController, phase || "delay");
+      const waitMs = Math.min(sliceMs, remainingMs);
+      await delay(waitMs);
+      remainingMs -= waitMs;
+    }
+
+    throwIfSkipCurrentPromptRequested(arrayRunController, phase || "delay");
+  }
+
+  async function waitForNextPromptTransition(duration, controller) {
+    const totalMs = Math.max(0, Math.trunc(Number(duration) || 0));
+    if (totalMs === 0) {
+      return { advancedEarly: false };
+    }
+
+    setArrayRunPhase(controller, ARRAY_RUN_PHASES.SLEEPING_BEFORE_NEXT_PROMPT);
+    let remainingMs = totalMs;
+    while (remainingMs > 0) {
+      if (isActiveArrayRunController(controller) && controller.skipRequested) {
+        console.warn(
+          `[skip] Advancing immediately after prompt ${controller.currentAbsoluteIndex} during inter-prompt wait.`
+        );
+        clearArrayRunSkipRequest(controller);
+        return { advancedEarly: true };
+      }
+
+      const waitMs = Math.min(250, remainingMs);
+      await delay(waitMs);
+      remainingMs -= waitMs;
+    }
+
+    return { advancedEarly: false };
+  }
+
+  async function openNewChat(options) {
+    fireShortcut("o", "KeyO", { shift: true });
+    await delayWithCheckpoint(1200, {
+      arrayRunController: options && options.arrayRunController,
+      phase: options && options.phase
+    });
+  }
+
+  function requestSkipCurrentPrompt() {
+    const controller = activeArrayRunController;
+    if (
+      !isActiveArrayRunController(controller) ||
+      !Number.isFinite(controller.currentAbsoluteIndex)
+    ) {
+      console.log("[skip] No active array prompt to skip.");
+      return {
+        ok: false,
+        reason: "no_active_array_run"
+      };
+    }
+
+    if (
+      controller.phase === ARRAY_RUN_PHASES.OPENING_NEW_CHAT_AFTER_SUCCESS ||
+      controller.phase === ARRAY_RUN_PHASES.OPENING_NEW_CHAT_AFTER_SKIP
+    ) {
+      console.log("[skip] Current run is already advancing to the next prompt.");
+      return {
+        ok: false,
+        reason: "already_advancing_to_next_prompt",
+        currentAbsoluteIndex: controller.currentAbsoluteIndex,
+        phase: controller.phase
+      };
+    }
+
+    if (controller.skipRequested) {
+      console.log(
+        `[skip] Skip already requested for prompt ${controller.currentAbsoluteIndex}.`
+      );
+      return {
+        ok: true,
+        alreadyRequested: true,
+        currentAbsoluteIndex: controller.currentAbsoluteIndex,
+        phase: controller.phase
+      };
+    }
+
+    controller.skipRequested = true;
+    controller.skipRequestedAt = Date.now();
+    console.warn(
+      `[skip] Requested skip for prompt ${controller.currentAbsoluteIndex}: "${summarizePromptForLog(
+        controller.currentPrompt
+      )}".`
+    );
+    return {
+      ok: true,
+      currentAbsoluteIndex: controller.currentAbsoluteIndex,
+      phase: controller.phase
+    };
   }
 
   function normalizeSendMode(mode) {
@@ -285,16 +524,18 @@
     return null;
   }
 
-  async function waitForImageGenerationLimitResetState(limitState) {
+  async function waitForImageGenerationLimitResetState(limitState, options) {
     if (!limitState || !Number.isFinite(limitState.waitMs)) {
       throw new Error("Image generation limit reset state is not available.");
     }
 
+    const arrayRunController = options && options.arrayRunController;
     const waitMs = Math.max(0, limitState.waitMs) + IMAGE_LIMIT_WAIT_BUFFER_MS;
     const startedAt = Date.now();
     const deadline = startedAt + waitMs;
     let nextLogAt = 0;
 
+    setArrayRunPhase(arrayRunController, ARRAY_RUN_PHASES.WAITING_IMAGE_LIMIT_RESET);
     console.warn(`[image-limit] Detected image generation limit message: ${limitState.text}`);
     console.warn(
       `[image-limit] Waiting ${formatDurationForLog(waitMs)} until approximately ${new Date(deadline).toLocaleString()}.`
@@ -318,7 +559,11 @@
           : remainingMs > 60 * 1000
             ? Math.min(15 * 1000, remainingMs)
             : Math.min(5 * 1000, remainingMs);
-      await delay(sleepMs);
+      await delayWithCheckpoint(sleepMs, {
+        arrayRunController,
+        phase: ARRAY_RUN_PHASES.WAITING_IMAGE_LIMIT_RESET,
+        sliceMs: 1000
+      });
     }
 
     const waitedMs = Date.now() - startedAt;
@@ -504,10 +749,13 @@
         : {
             assistantTurnCount: 0
           };
+    const arrayRunController = waitOptions.arrayRunController;
     let trackedPreviousButtons = previousButtons;
     let deadline = Date.now() + timeoutMs;
 
     while (Date.now() < deadline) {
+      setArrayRunPhase(arrayRunController, ARRAY_RUN_PHASES.WAITING_GENERATED_IMAGE);
+      throwIfSkipCurrentPromptRequested(arrayRunController, ARRAY_RUN_PHASES.WAITING_GENERATED_IMAGE);
       const buttons = getNewDownloadButtons(trackedPreviousButtons);
       if (buttons.length > 0) {
         return buttons;
@@ -517,7 +765,9 @@
       if (imageLimitState) {
         const recoveryStart = Date.now();
         waitOptions.assistantTurnCount = imageLimitState.turnIndex + 1;
-        const waitResult = await waitForImageGenerationLimitResetState(imageLimitState);
+        const waitResult = await waitForImageGenerationLimitResetState(imageLimitState, {
+          arrayRunController
+        });
         waitOptions.assistantTurnCount = Math.max(
           waitOptions.assistantTurnCount,
           waitResult.assistantTurnCount
@@ -537,7 +787,10 @@
         continue;
       }
 
-      await delay(intervalMs);
+      await delayWithCheckpoint(intervalMs, {
+        arrayRunController,
+        phase: ARRAY_RUN_PHASES.WAITING_GENERATED_IMAGE
+      });
     }
 
     throw new Error(IMAGE_DOWNLOAD_TIMEOUT_ERROR_MESSAGE);
@@ -906,16 +1159,11 @@
     }
   }
 
-  async function openNewChat() {
-    fireShortcut("o", "KeyO", { shift: true });
-    await delay(1200);
-  }
-
   function isBusyGenerating() {
     return Boolean(document.querySelector('button[data-testid="stop-button"]'));
   }
 
-  async function clickRegenerate() {
+  async function clickRegenerate(options) {
     const regenerateButton =
       document.querySelector(
         'button[data-testid*="regenerate" i], button[data-testid*="retry" i], button[aria-label*="Regenerate" i], button[aria-label*="Try again" i]'
@@ -927,7 +1175,10 @@
 
     if (regenerateButton && !regenerateButton.disabled) {
       regenerateButton.click();
-      await delay(1200);
+      await delayWithCheckpoint(1200, {
+        arrayRunController: options && options.arrayRunController,
+        phase: options && options.phase ? options.phase : ARRAY_RUN_PHASES.WAITING_SEND_READY
+      });
     }
   }
 
@@ -940,33 +1191,54 @@
     throw new Error("Send button is not available.");
   }
 
-  async function waitForButtonAvailable(checkInterval, sleepMs, startTime, timeoutMs, setMsgFn) {
+  async function waitForButtonAvailable(
+    checkInterval,
+    sleepMs,
+    startTime,
+    timeoutMs,
+    setMsgFn,
+    options
+  ) {
+    const arrayRunController = options && options.arrayRunController;
     while (Date.now() - startTime < timeoutMs) {
+      setArrayRunPhase(arrayRunController, ARRAY_RUN_PHASES.WAITING_SEND_READY);
+      throwIfSkipCurrentPromptRequested(arrayRunController, ARRAY_RUN_PHASES.WAITING_SEND_READY);
       if (!isBusyGenerating()) {
         await setMsgFn();
+        throwIfSkipCurrentPromptRequested(arrayRunController, ARRAY_RUN_PHASES.WAITING_SEND_READY);
 
         const sendButton = getSendButton();
         if (sendButton && !sendButton.disabled) {
           const waited = Date.now() - startTime;
           if (waited < sleepMs) {
-            await delay(sleepMs - waited);
+            await delayWithCheckpoint(sleepMs - waited, {
+              arrayRunController,
+              phase: ARRAY_RUN_PHASES.WAITING_SEND_READY
+            });
           }
 
           await setMsgFn();
+          throwIfSkipCurrentPromptRequested(arrayRunController, ARRAY_RUN_PHASES.WAITING_SEND_READY);
           await clickSendButton();
           return;
         }
       } else {
-        await clickRegenerate();
+        await clickRegenerate({
+          arrayRunController,
+          phase: ARRAY_RUN_PHASES.WAITING_SEND_READY
+        });
       }
 
-      await delay(checkInterval);
+      await delayWithCheckpoint(checkInterval, {
+        arrayRunController,
+        phase: ARRAY_RUN_PHASES.WAITING_SEND_READY
+      });
     }
 
     throw new Error("Operation timed out.");
   }
 
-  async function sendMessage(msg, checkInterval, sleep, timeout) {
+  async function sendMessage(msg, checkInterval, sleep, timeout, options) {
     const intervalMs = checkInterval ?? 100;
     const sleepMs = sleep ?? 0;
     const timeoutSeconds = timeout ?? 3600;
@@ -979,7 +1251,7 @@
     };
 
     const startTime = Date.now();
-    await waitForButtonAvailable(intervalMs, sleepMs, startTime, timeoutMs, setMsgFn);
+    await waitForButtonAvailable(intervalMs, sleepMs, startTime, timeoutMs, setMsgFn, options);
   }
 
   function normalizeRetryPromptValue(prompt) {
@@ -1001,17 +1273,29 @@
     return new Set(getDownloadButtons().map((button) => getDownloadTargetKey(button)).filter(Boolean));
   }
 
-  async function runMagicRetry(originalPrompt) {
+  async function runMagicRetry(originalPrompt, options) {
     const normalizedPrompt = String(originalPrompt ?? "").trim();
     if (normalizedPrompt.length === 0) {
       throw new Error("MAGIC_RETRY requires the original prompt.");
     }
 
+    const arrayRunController = options && options.arrayRunController;
     console.warn("[image-retry] MAGIC_RETRY: opening a new chat and resending the original prompt.");
-    await openNewChat();
+    await openNewChat({
+      arrayRunController,
+      phase: ARRAY_RUN_PHASES.OPENING_NEW_CHAT_FOR_RETRY
+    });
     const assistantTurnCount = getAssistantTurnElements().length;
     const previousButtons = captureDownloadTargetKeys();
-    await sendMessage(normalizedPrompt, undefined, undefined, IMAGE_DOWNLOAD_TIMEOUT_SECONDS);
+    await sendMessage(
+      normalizedPrompt,
+      undefined,
+      undefined,
+      IMAGE_DOWNLOAD_TIMEOUT_SECONDS,
+      {
+        arrayRunController
+      }
+    );
 
     return {
       assistantTurnCount,
@@ -1069,8 +1353,12 @@
       waitOptions && waitOptions.originalPrompt !== undefined && waitOptions.originalPrompt !== null
         ? String(waitOptions.originalPrompt)
         : "";
+    const arrayRunController = waitOptions.arrayRunController;
     const sharedWaitOptions = waitOptions;
-    sharedWaitOptions.onLimitRecovered = async () => runMagicRetry(originalPrompt);
+    sharedWaitOptions.onLimitRecovered = async () =>
+      runMagicRetry(originalPrompt, {
+        arrayRunController
+      });
 
     while (true) {
       try {
@@ -1098,14 +1386,26 @@
           console.warn(
             `Timed out waiting for a generated image. Running retry step ${nextRetryNumber}/${retryPromptQueue.length}: MAGIC_RETRY.`
           );
-          const retryResult = await runMagicRetry(originalPrompt);
+          setArrayRunPhase(arrayRunController, ARRAY_RUN_PHASES.RETRYING_PROMPT);
+          const retryResult = await runMagicRetry(originalPrompt, {
+            arrayRunController
+          });
           previousButtons = retryResult.previousButtons;
           waitOptions.assistantTurnCount = retryResult.assistantTurnCount;
         } else {
           console.warn(
             `Timed out waiting for a generated image. Sending retry step ${nextRetryNumber}/${retryPromptQueue.length} and waiting for the composer to become sendable.`
           );
-          await sendMessage(retryStep, undefined, undefined, IMAGE_DOWNLOAD_TIMEOUT_SECONDS);
+          setArrayRunPhase(arrayRunController, ARRAY_RUN_PHASES.RETRYING_PROMPT);
+          await sendMessage(
+            retryStep,
+            undefined,
+            undefined,
+            IMAGE_DOWNLOAD_TIMEOUT_SECONDS,
+            {
+              arrayRunController
+            }
+          );
           waitOptions.assistantTurnCount = getAssistantTurnElements().length;
         }
         retryCount = nextRetryNumber;
@@ -1127,9 +1427,12 @@
       options && typeof options.filenameBaseBuilder === "function"
         ? options.filenameBaseBuilder
         : null;
+    const arrayRunController = options && options.arrayRunController;
 
     console.log(`Found ${buttons.length} generated image(s). Downloading all.`);
     for (let index = 0; index < buttons.length; index++) {
+      setArrayRunPhase(arrayRunController, ARRAY_RUN_PHASES.DOWNLOADING_IMAGES);
+      throwIfSkipCurrentPromptRequested(arrayRunController, ARRAY_RUN_PHASES.DOWNLOADING_IMAGES);
       const button = buttons[index];
       console.log(`Downloading generated image ${index + 1}`);
 
@@ -1192,7 +1495,10 @@
         console.log(
           `Pausing ${DOWNLOAD_CLICK_BURST_DELAY_MS / 1000} seconds after ${clickedCount} download clicks...`
         );
-        await delay(DOWNLOAD_CLICK_BURST_DELAY_MS);
+        await delayWithCheckpoint(DOWNLOAD_CLICK_BURST_DELAY_MS, {
+          arrayRunController,
+          phase: ARRAY_RUN_PHASES.DOWNLOADING_IMAGES
+        });
       }
     }
     return buttons.length;
@@ -1220,16 +1526,19 @@
       options && options.originalPrompt !== undefined && options.originalPrompt !== null
         ? String(options.originalPrompt)
         : "";
+    const arrayRunController = options && options.arrayRunController;
 
     if (useNewChat) {
       console.log("Waiting for generated image...");
       const waitResult = await waitForDownloadButtonVisibleWithRetry(previousButtons, undefined, {
         assistantTurnCount,
-        originalPrompt
+        originalPrompt,
+        arrayRunController
       });
       const newButtons = waitResult.buttons;
       const clickedCount = await clickDownloadButtons(newButtons, undefined, {
-        filenameBaseBuilder
+        filenameBaseBuilder,
+        arrayRunController
       });
       const retrySuffix =
         waitResult.retryCount > 0
@@ -1240,15 +1549,42 @@
       );
 
       if (index < total - 1) {
+        setArrayRunPhase(arrayRunController, ARRAY_RUN_PHASES.OPENING_NEW_CHAT_AFTER_SUCCESS);
         await openNewChat();
-        await delay(sleepDuration > 0 ? sleepDuration : 1200);
+        await waitForNextPromptTransition(
+          sleepDuration > 0 ? sleepDuration : 1200,
+          arrayRunController
+        );
       }
       return;
     }
 
     if (index < total - 1) {
       console.log(`Waiting ${sleepSeconds} seconds before the next send...`);
-      await delay(sleepDuration);
+      await waitForNextPromptTransition(sleepDuration, arrayRunController);
+    }
+  }
+
+  async function handleSkippedCurrentArrayPrompt(controller, options) {
+    const currentAbsoluteIndex =
+      controller && Number.isFinite(controller.currentAbsoluteIndex)
+        ? controller.currentAbsoluteIndex
+        : null;
+    const hasNextPrompt = Boolean(options && options.hasNextPrompt);
+    const useNewChat = Boolean(options && options.useNewChat);
+    const currentPromptSent = Boolean(controller && controller.currentPromptSent);
+
+    console.warn(
+      currentAbsoluteIndex === null
+        ? "[skip] Skipping current prompt and advancing."
+        : `[skip] Skipped prompt ${currentAbsoluteIndex}; advancing to the next prompt.`
+    );
+
+    clearArrayRunSkipRequest(controller);
+
+    if (useNewChat && currentPromptSent && hasNextPrompt) {
+      setArrayRunPhase(controller, ARRAY_RUN_PHASES.OPENING_NEW_CHAT_AFTER_SKIP);
+      await openNewChat();
     }
   }
 
@@ -1343,56 +1679,89 @@
 
     const selectedMessages = messages.slice(fromIndex, toIndexExclusive);
     const lastIndex = toIndexExclusive - 1;
+    if (activeArrayRunController && activeArrayRunController.active) {
+      throw new Error("An array prompt run is already active; cannot start another skippable array run.");
+    }
 
-    for (let i = 0; i < selectedMessages.length; i++) {
-      const absoluteIndex = fromIndex + i;
-      const fullPrompt = `${prefixText}${selectedMessages[i]}${postfixText}`;
-      const previousButtons = useNewChat
-        ? new Set(getDownloadButtons().map((button) => getDownloadTargetKey(button)).filter(Boolean))
-        : undefined;
-      const previousAssistantTurnCount = useNewChat ? getAssistantTurnElements().length : 0;
-      await sendMessage(fullPrompt);
-      console.log(`Message sent (${absoluteIndex}/${lastIndex}).`);
+    const arrayRunController = createArrayRunController({
+      useNewChat,
+      totalSelected: selectedMessages.length
+    });
+    activeArrayRunController = arrayRunController;
 
-      try {
-        await handlePostSend(
-          i,
-          selectedMessages.length,
-          sleepDuration,
-          sleepSeconds,
-          useNewChat,
-          previousButtons,
-          {
-            progressCurrent: absoluteIndex,
-            progressTotal: lastIndex,
-            assistantTurnCount: previousAssistantTurnCount,
-            originalPrompt: fullPrompt,
-            filenameBaseBuilder: useNewChat
-              ? (downloadIndex) =>
-                  downloadIndex === 0 ? `${absoluteIndex}` : `${absoluteIndex}_${downloadIndex}`
-              : undefined
+    try {
+      for (let i = 0; i < selectedMessages.length; i++) {
+        const absoluteIndex = fromIndex + i;
+        const fullPrompt = `${prefixText}${selectedMessages[i]}${postfixText}`;
+        const hasNextPrompt = i < selectedMessages.length - 1;
+        const previousButtons = useNewChat ? captureDownloadTargetKeys() : undefined;
+        const previousAssistantTurnCount = useNewChat ? getAssistantTurnElements().length : 0;
+
+        setArrayRunCurrentPrompt(arrayRunController, absoluteIndex, fullPrompt);
+
+        try {
+          await sendMessage(fullPrompt, undefined, undefined, undefined, {
+            arrayRunController
+          });
+          markArrayRunCurrentPromptSent(arrayRunController);
+          console.log(`Message sent (${absoluteIndex}/${lastIndex}).`);
+
+          await handlePostSend(
+            i,
+            selectedMessages.length,
+            sleepDuration,
+            sleepSeconds,
+            useNewChat,
+            previousButtons,
+            {
+              progressCurrent: absoluteIndex,
+              progressTotal: lastIndex,
+              assistantTurnCount: previousAssistantTurnCount,
+              originalPrompt: fullPrompt,
+              arrayRunController,
+              filenameBaseBuilder: useNewChat
+                ? (downloadIndex) =>
+                    downloadIndex === 0 ? `${absoluteIndex}` : `${absoluteIndex}_${downloadIndex}`
+                : undefined
+            }
+          );
+        } catch (error) {
+          if (isSkipCurrentPromptError(error)) {
+            await handleSkippedCurrentArrayPrompt(arrayRunController, {
+              hasNextPrompt,
+              useNewChat
+            });
+            continue;
           }
-        );
-      } catch (error) {
-        if (!continueOnImageDownloadTimeout || !isImageDownloadTimeoutError(error)) {
-          throw error;
-        }
 
-        const failedFilename = downloadTextFile(
-          fullPrompt,
-          `failed_prompt_${absoluteIndex}_of_${lastIndex}`
-        );
-        console.error(
-          `Timed out waiting for a generated image (${absoluteIndex}/${lastIndex}). ` +
-            `Saved failed prompt to "${failedFilename}". Continuing.`,
-          error
-        );
+          if (!continueOnImageDownloadTimeout || !isImageDownloadTimeoutError(error)) {
+            throw error;
+          }
 
-        if (i < selectedMessages.length - 1) {
-          await openNewChat();
-          await delay(sleepDuration > 0 ? sleepDuration : 1200);
+          const failedFilename = downloadTextFile(
+            fullPrompt,
+            `failed_prompt_${absoluteIndex}_of_${lastIndex}`
+          );
+          console.error(
+            `Timed out waiting for a generated image (${absoluteIndex}/${lastIndex}). ` +
+              `Saved failed prompt to "${failedFilename}". Continuing.`,
+            error
+          );
+
+          if (hasNextPrompt) {
+            setArrayRunPhase(arrayRunController, ARRAY_RUN_PHASES.OPENING_NEW_CHAT_AFTER_SKIP);
+            await openNewChat();
+            await waitForNextPromptTransition(
+              sleepDuration > 0 ? sleepDuration : 1200,
+              arrayRunController
+            );
+          }
+        } finally {
+          clearArrayRunCurrentPrompt(arrayRunController);
         }
       }
+    } finally {
+      finalizeArrayRunController(arrayRunController);
     }
   }
 
@@ -1523,6 +1892,7 @@
   window.sendMessageRepeatedly = sendMessageRepeatedly;
   window.sendMessageRepeatedlyArray = sendMessageRepeatedlyArray;
   window.sendMessageRepeatedlyArrayChooseFile = sendMessageRepeatedlyArrayChooseFile;
+  window.skipCurrentPrompt = requestSkipCurrentPrompt;
   window.clickDallEDownloadButtons = clickDallEDownloadButtons;
   window.waitForImageGenerationLimitReset = waitForImageGenerationLimitReset;
   window.MAGIC_RETRY = MAGIC_RETRY_PROMPT;
@@ -1531,6 +1901,7 @@
   // sendMessageRepeatedly("Thanks, continue.", n=2, sleep=60,)
   // sendMessageRepeatedlyArray("Prompt 1\nPrompt 2", sleep=10, sep="\n", prefix="", postfix="", from=0, to=0, mode="continuous")
   // sendMessageRepeatedlyArrayChooseFile(sleep=10, sep="\n", prefix="", postfix="", from=0, to=0, mode="new_chat_image")
+  // skipCurrentPrompt()
   if (!("n" in window)) {
     window.n = undefined;
   }
