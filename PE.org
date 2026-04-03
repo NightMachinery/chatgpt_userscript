@@ -2,6 +2,11 @@
 
 * _
 #+BEGIN_SRC markdown
+read docs/update_userscript.md . `clickDallEDownloadButtons()` seems to have broken.  investigate. I have the remote chrome open at a page with an image already generated,  you just have to find the best way to detect the generated image and how to download it.  perhaps we should find the asset url directly.
+#+END_SRC
+
+* _
+#+BEGIN_SRC markdown
 open chrome using mcp and wait for me to sign in to chatgpt
 #+END_SRC
 
