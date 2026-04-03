@@ -3,7 +3,7 @@
 * What this is
 =basic.js= is a userscript for =https://chatgpt.com/*= that helps with:
 - repeated message sending with delay
-- bulk clicking image download buttons
+- bulk downloading generated images
 
 * Install
 1. Install a userscript manager (Tampermonkey/Violentmonkey).
@@ -31,16 +31,15 @@ clickDallEDownloadButtons();
 - =sleep= in =sendMessageRepeatedly= is in seconds.
 - =timeout= in =sendMessage= is in seconds.
 - =mode= defaults to =continuous=.
-- =mode="new_chat_image"= waits for a visible image download button; on each timeout it sends the next retry prompt using the normal send wait logic (by default: the creative-license guidance, then =Generate!=), waits again, then downloads and opens a new chat on success.
+- =mode="new_chat_image"= waits for a visible generated image; on each timeout it sends the next retry prompt using the normal send wait logic (by default: the creative-license guidance, then =Generate!=), waits again, then downloads and opens a new chat on success.
 - In array helpers, progress and failure logs use absolute array indices (0-based), so ranges show as =from..to-1=.
 - =to= is an exclusive end index in array helpers.
 - =to= defaults to =0=, and =to=0= maps to end-of-array (send all items from =from=).
 - =sendMessageRepeatedlyArrayChooseFile(...)= skips prompts that are only whitespace after splitting by =sep=, and applies =from= / =to= to that filtered prompt list.
 - In =new_chat_image= array mode, downloaded image filenames are normalized to array indices: =x.ext=, =x_1.ext=, =x_2.ext=, ...
-- Filename normalization remains best-effort under =@grant none=, but the rename interceptor now stays armed across hidden/background-tab waits and only times out after =60000ms= of /visible/ page time.
-- Download helper targets current image download button attributes.
-- Downloader click throttling is built in: after every 10 download clicks, it waits 1.1 seconds before continuing.
-- =clickDallEDownloadButtons()= may require manually scrolling to the top of the chat so target image download buttons are present/visible.
+- Download helper targets visible generated-image tiles and fetches their current =/backend-api/estuary/content= asset URLs directly.
+- Downloader throttling is built in: after every 10 image downloads, it waits 1.1 seconds before continuing.
+- =clickDallEDownloadButtons()= may require manually scrolling to the top of the chat so the target generated images are mounted/visible.
 
 * Maintenance
 For adapting to upstream ChatGPT UI changes with MCP, see:

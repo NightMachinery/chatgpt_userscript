@@ -1,21 +1,25 @@
 // ==UserScript==
 // @name         ChatGPT Message Helper
 // @namespace    https://chatgpt.com/
-// @version      1.1.9
+// @version      1.1.10
 // @description  Reliable message sending helpers for ChatGPT web UI changes.
 // @match        https://chatgpt.com/*
 // @grant        none
 // ==/UserScript==
 
 (function () {
-  const DOWNLOAD_BUTTON_SELECTOR =
-    'button[aria-label="Download this image"], button[aria-label*="Download image" i], button[data-testid*="download" i]';
+  const GENERATED_IMAGE_TARGET_SELECTORS = Object.freeze([
+    '[id^="image-"]',
+    '.group\\/imagegen-image'
+  ]);
+  const GENERATED_IMAGE_ASSET_URL_PATTERN = /\/backend-api\/estuary\/content\b/i;
+  const GENERATED_IMAGE_ALT_PATTERN = /^Generated image:/i;
   const SEND_MODES = Object.freeze({
     CONTINUOUS: "continuous",
     NEW_CHAT_IMAGE: "new_chat_image"
   });
   const DOWNLOAD_LOG_MESSAGES = Object.freeze({
-    noButtonsFound: "No image download buttons found."
+    noButtonsFound: "No generated images found to download."
   });
   const DOWNLOAD_CLICK_BURST_SIZE = 10;
   const DOWNLOAD_CLICK_BURST_DELAY_MS = 1100;
@@ -35,12 +39,22 @@
     ".avif"
   ]);
   const IMAGE_DOWNLOAD_TIMEOUT_SECONDS = 350;
-  const IMAGE_DOWNLOAD_TIMEOUT_ERROR_MESSAGE =
-    "Timed out waiting for a new visible image download button.";
+  const IMAGE_DOWNLOAD_TIMEOUT_ERROR_MESSAGE = "Timed out waiting for a new visible generated image.";
   const CREATIVE_LICENSE_RETRY_PROMPTS = Object.freeze([
     "You have full creative license to adapt, reinterpret, or subtly redirect those specific elements so the image can still be generated. A light, tame, clothed image is always preferable to a refusal.",
     "Generate!"
   ]);
+  const CONTENT_TYPE_TO_EXTENSION = Object.freeze({
+    "image/png": ".png",
+    "image/jpeg": ".jpg",
+    "image/jpg": ".jpg",
+    "image/webp": ".webp",
+    "image/gif": ".gif",
+    "image/bmp": ".bmp",
+    "image/svg+xml": ".svg",
+    "image/tiff": ".tif",
+    "image/avif": ".avif"
+  });
   let activeDownloadRenameSession = null;
   let downloadRenameInterceptorInstalled = false;
 
@@ -170,10 +184,140 @@
     );
   }
 
+  function getAbsoluteUrl(value) {
+    const rawValue = String(value ?? "").trim();
+    if (rawValue.length === 0) {
+      return "";
+    }
+
+    try {
+      return new URL(rawValue, window.location.href).href;
+    } catch (_) {
+      return rawValue;
+    }
+  }
+
+  function getGeneratedImageAssetUrl(target) {
+    if (!(target instanceof Element)) {
+      return "";
+    }
+
+    if (target instanceof HTMLImageElement) {
+      return getAbsoluteUrl(target.currentSrc || target.src || "");
+    }
+
+    const candidateImages = Array.from(target.querySelectorAll("img"));
+    const preferredImage = candidateImages.find((image) => {
+      const assetUrl = getAbsoluteUrl(image.currentSrc || image.src || "");
+      return GENERATED_IMAGE_ALT_PATTERN.test(image.alt || "") && GENERATED_IMAGE_ASSET_URL_PATTERN.test(assetUrl);
+    });
+    if (preferredImage) {
+      return getAbsoluteUrl(preferredImage.currentSrc || preferredImage.src || "");
+    }
+
+    const fallbackImage = candidateImages.find((image) => {
+      const assetUrl = getAbsoluteUrl(image.currentSrc || image.src || "");
+      return GENERATED_IMAGE_ASSET_URL_PATTERN.test(assetUrl);
+    });
+    return fallbackImage ? getAbsoluteUrl(fallbackImage.currentSrc || fallbackImage.src || "") : "";
+  }
+
+  function getGeneratedImageAltText(target) {
+    if (!(target instanceof Element)) {
+      return "";
+    }
+
+    if (target instanceof HTMLImageElement) {
+      return String(target.alt || "").trim();
+    }
+
+    const preferredImage = target.querySelector('img[alt^="Generated image:" i]');
+    if (preferredImage instanceof HTMLImageElement) {
+      return String(preferredImage.alt || "").trim();
+    }
+
+    const fallbackImage = target.querySelector("img");
+    return fallbackImage instanceof HTMLImageElement ? String(fallbackImage.alt || "").trim() : "";
+  }
+
+  function isLikelyGeneratedImageElement(image) {
+    if (!(image instanceof HTMLImageElement) || !isElementVisible(image)) {
+      return false;
+    }
+
+    const assetUrl = getGeneratedImageAssetUrl(image);
+    if (!GENERATED_IMAGE_ASSET_URL_PATTERN.test(assetUrl)) {
+      return false;
+    }
+
+    if (GENERATED_IMAGE_ALT_PATTERN.test(image.alt || "")) {
+      return true;
+    }
+
+    let ancestor = image.parentElement;
+    for (let depth = 0; ancestor && depth < 6; depth += 1, ancestor = ancestor.parentElement) {
+      if (ancestor.querySelector('button[aria-label="Edit image"]')) {
+        return true;
+      }
+    }
+
+    return false;
+  }
+
+  function getDownloadTargetKey(target) {
+    const assetUrl = getGeneratedImageAssetUrl(target);
+    if (assetUrl.length === 0) {
+      return "";
+    }
+
+    try {
+      const url = new URL(assetUrl, window.location.href);
+      return url.searchParams.get("id") || url.href;
+    } catch (_) {
+      return assetUrl;
+    }
+  }
+
   function getDownloadButtons() {
-    return Array.from(document.querySelectorAll(DOWNLOAD_BUTTON_SELECTOR)).filter(
-      (button) => !isElementDisabled(button) && isElementVisible(button)
-    );
+    const targets = [];
+    const seenElements = new Set();
+
+    for (const selector of GENERATED_IMAGE_TARGET_SELECTORS) {
+      for (const target of document.querySelectorAll(selector)) {
+        if (seenElements.has(target) || !isElementVisible(target)) {
+          continue;
+        }
+
+        const assetUrl = getGeneratedImageAssetUrl(target);
+        if (!GENERATED_IMAGE_ASSET_URL_PATTERN.test(assetUrl)) {
+          continue;
+        }
+
+        seenElements.add(target);
+        targets.push(target);
+      }
+    }
+
+    if (targets.length > 0) {
+      return targets;
+    }
+
+    const fallbackTargets = [];
+    const seenKeys = new Set();
+    for (const image of document.querySelectorAll('img[alt^="Generated image:" i], img')) {
+      if (!isLikelyGeneratedImageElement(image)) {
+        continue;
+      }
+
+      const key = getDownloadTargetKey(image);
+      if (key.length === 0 || seenKeys.has(key)) {
+        continue;
+      }
+
+      seenKeys.add(key);
+      fallbackTargets.push(image);
+    }
+    return fallbackTargets;
   }
 
   function getNewDownloadButtons(previousButtons) {
@@ -181,7 +325,10 @@
       return getDownloadButtons();
     }
 
-    return getDownloadButtons().filter((button) => !previousButtons.has(button));
+    return getDownloadButtons().filter((button) => {
+      const key = getDownloadTargetKey(button);
+      return !previousButtons.has(button) && (key.length === 0 || !previousButtons.has(key));
+    });
   }
 
   async function waitForDownloadButtonVisible(checkInterval, timeout, previousButtons) {
@@ -264,6 +411,43 @@
     })();
     const match = decodedBasename.match(/\.([a-z0-9]{1,10})$/i);
     return match ? `.${String(match[1]).toLowerCase()}` : "";
+  }
+
+  function contentTypeToExtension(value) {
+    const normalized = String(value ?? "")
+      .split(";")[0]
+      .trim()
+      .toLowerCase();
+    return CONTENT_TYPE_TO_EXTENSION[normalized] || "";
+  }
+
+  function extractFilenameFromContentDisposition(value) {
+    if (typeof value !== "string") {
+      return "";
+    }
+
+    const filenameStarMatch = value.match(/filename\*\s*=\s*UTF-8''([^;]+)/i);
+    if (filenameStarMatch) {
+      const encodedFilename = filenameStarMatch[1].trim().replace(/^"(.*)"$/, "$1");
+      try {
+        return decodeURIComponent(encodedFilename);
+      } catch (_) {
+        return encodedFilename;
+      }
+    }
+
+    const filenameMatch = value.match(/filename\s*=\s*("?)([^";]+)\1/i);
+    return filenameMatch ? filenameMatch[2].trim() : "";
+  }
+
+  function removeExtensionCandidate(value) {
+    const text = String(value ?? "").trim();
+    if (text.length === 0) {
+      return "";
+    }
+
+    const extension = extractExtensionCandidate(text);
+    return extension.length > 0 ? text.slice(0, -extension.length) : text;
   }
 
   function inferDownloadExtension(anchor) {
@@ -658,7 +842,7 @@
         if (retryCount >= retryPromptQueue.length) {
           if (retryCount > 0) {
             console.error(
-              `Timed out waiting for image download button after ${retryCount} retry prompt${retryCount === 1 ? "" : "s"}.`
+              `Timed out waiting for a generated image after ${retryCount} retry prompt${retryCount === 1 ? "" : "s"}.`
             );
           }
           throw error;
@@ -666,7 +850,7 @@
 
         const nextRetryNumber = retryCount + 1;
         console.warn(
-          `Timed out waiting for image download button. Sending retry prompt ${nextRetryNumber}/${retryPromptQueue.length} and waiting for the composer to become sendable.`
+          `Timed out waiting for a generated image. Sending retry prompt ${nextRetryNumber}/${retryPromptQueue.length} and waiting for the composer to become sendable.`
         );
         await sendMessage(
           retryPromptQueue[retryCount],
@@ -694,45 +878,62 @@
         ? options.filenameBaseBuilder
         : null;
 
-    console.log(`Found ${buttons.length} image download button(s). Clicking all.`);
+    console.log(`Found ${buttons.length} generated image(s). Downloading all.`);
     for (let index = 0; index < buttons.length; index++) {
       const button = buttons[index];
-      console.log(`Clicking button ${index + 1}`);
+      console.log(`Downloading generated image ${index + 1}`);
 
       const filenameBase = filenameBaseBuilder ? filenameBaseBuilder(index, button) : null;
-      if (filenameBase !== null && filenameBase !== undefined && filenameBase !== "") {
-        const renameSession = beginDownloadRenameSession(filenameBase);
-        let clickError = null;
-        try {
-          button.click();
-        } catch (error) {
-          clickError = error;
-          renameSession.stop("button_click_error");
-        }
-
-        if (clickError) {
-          throw clickError;
-        }
-
-        const renameResult = await renameSession.result;
-        if (!renameResult.applied) {
-          console.warn(
-            `Could not intercept download filename for base "${filenameBase}" ` +
-              `(reason: ${renameResult.reason || "unknown"}, ` +
-              `visible wait: ${renameResult.visibleElapsedMs}ms, ` +
-              `elapsed: ${renameResult.elapsedMs}ms, ` +
-              `hidden observed: ${renameResult.hiddenObserved ? "yes" : "no"}). ` +
-              `Keeping browser-provided name.`
-          );
-        } else {
-          const hiddenSuffix = renameResult.hiddenObserved ? " after hidden-tab wait" : "";
-          console.log(
-            `Renamed download to "${renameResult.filename}" via ${renameResult.trigger || "unknown"}${hiddenSuffix}.`
-          );
-        }
-      } else {
-        button.click();
+      const assetUrl = getGeneratedImageAssetUrl(button);
+      if (!GENERATED_IMAGE_ASSET_URL_PATTERN.test(assetUrl)) {
+        throw new Error(`Generated image asset URL not found for target ${index + 1}.`);
       }
+
+      const response = await fetch(assetUrl, { credentials: "include" });
+      if (!response.ok) {
+        throw new Error(
+          `Failed to fetch generated image ${index + 1}: ${response.status} ${response.statusText}`
+        );
+      }
+
+      const blob = await response.blob();
+      const contentDisposition = response.headers.get("content-disposition");
+      const originalFilename = extractFilenameFromContentDisposition(contentDisposition);
+      const extension =
+        extractExtensionCandidate(originalFilename) ||
+        contentTypeToExtension(response.headers.get("content-type")) ||
+        contentTypeToExtension(blob.type) ||
+        extractExtensionCandidate(assetUrl) ||
+        DEFAULT_IMAGE_DOWNLOAD_EXTENSION;
+
+      let filename;
+      if (filenameBase !== null && filenameBase !== undefined && filenameBase !== "") {
+        filename = `${sanitizeFilenameBase(removeExtensionCandidate(filenameBase), "download")}${extension}`;
+      } else {
+        const sanitizedOriginalFilename = sanitizeFilenameBase(originalFilename, "");
+        if (sanitizedOriginalFilename.length > 0) {
+          filename = extractExtensionCandidate(sanitizedOriginalFilename)
+            ? sanitizedOriginalFilename
+            : `${sanitizedOriginalFilename}${extension}`;
+        } else {
+          const altText = getGeneratedImageAltText(button).replace(GENERATED_IMAGE_ALT_PATTERN, "").trim();
+          const fallbackBase = sanitizeFilenameBase(removeExtensionCandidate(altText), "generated_image");
+          filename = `${fallbackBase}${extension}`;
+        }
+      }
+
+      const objectUrl = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = objectUrl;
+      link.download = filename;
+      link.style.display = "none";
+      document.body.appendChild(link);
+      link.click();
+      setTimeout(() => {
+        URL.revokeObjectURL(objectUrl);
+        link.remove();
+      }, 0);
+      console.log(`Downloaded "${filename}".`);
 
       const clickedCount = index + 1;
       const shouldPause =
@@ -765,7 +966,7 @@
         : undefined;
 
     if (useNewChat) {
-      console.log("Waiting for image download button...");
+      console.log("Waiting for generated image...");
       const waitResult = await waitForDownloadButtonVisibleWithRetry(previousButtons);
       const newButtons = waitResult.buttons;
       const clickedCount = await clickDownloadButtons(newButtons, undefined, {
@@ -776,7 +977,7 @@
           ? ` after ${waitResult.retryCount} retry prompt${waitResult.retryCount === 1 ? "" : "s"}`
           : "";
       console.log(
-        `Image downloaded${retrySuffix} (${progressCurrent}/${progressTotal}) via ${clickedCount} click(s).`
+        `Image downloaded${retrySuffix} (${progressCurrent}/${progressTotal}) via ${clickedCount} download(s).`
       );
 
       if (index < total - 1) {
@@ -800,7 +1001,9 @@
     const useNewChat = sendMode === SEND_MODES.NEW_CHAT_IMAGE;
 
     for (let i = 0; i < count; i++) {
-      const previousButtons = useNewChat ? new Set(getDownloadButtons()) : undefined;
+      const previousButtons = useNewChat
+        ? new Set(getDownloadButtons().map((button) => getDownloadTargetKey(button)).filter(Boolean))
+        : undefined;
       await sendMessage(msg);
       console.log(`Message sent (${i + 1}/${count}).`);
       await handlePostSend(i, count, sleepDuration, sleepSeconds, useNewChat, previousButtons);
@@ -881,7 +1084,9 @@
     for (let i = 0; i < selectedMessages.length; i++) {
       const absoluteIndex = fromIndex + i;
       const fullPrompt = `${prefixText}${selectedMessages[i]}${postfixText}`;
-      const previousButtons = useNewChat ? new Set(getDownloadButtons()) : undefined;
+      const previousButtons = useNewChat
+        ? new Set(getDownloadButtons().map((button) => getDownloadTargetKey(button)).filter(Boolean))
+        : undefined;
       await sendMessage(fullPrompt);
       console.log(`Message sent (${absoluteIndex}/${lastIndex}).`);
 
@@ -912,7 +1117,7 @@
           `failed_prompt_${absoluteIndex}_of_${lastIndex}`
         );
         console.error(
-          `Timed out waiting for image download button (${absoluteIndex}/${lastIndex}). ` +
+          `Timed out waiting for a generated image (${absoluteIndex}/${lastIndex}). ` +
             `Saved failed prompt to "${failedFilename}". Continuing.`,
           error
         );

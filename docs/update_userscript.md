@@ -150,18 +150,17 @@ Do not click random composer buttons by class only; many look similar (voice, di
 When `mode === "new_chat_image"` in repeated send helpers, current flow is:
 
 1. send prompt
-2. wait until a visible image download button appears for the newest response
+2. wait until a visible generated image appears for the newest response
 3. if that wait times out, send the next retry prompt using the normal send flow so the helper can wait for the composer/send button
-4. repeat the image-download wait after each retry prompt until an image appears or the retry queue is exhausted
+4. repeat the generated-image wait after each retry prompt until an image appears or the retry queue is exhausted
 5. the default retry queue is the creative-license guidance prompt followed by `"Generate!"`
-6. click the download button(s) once they appear; when filename normalization is enabled, a global anchor interceptor keeps a rename session active for up to `DOWNLOAD_FILENAME_VISIBLE_TIMEOUT_MS` of visible page time
+6. fetch the generated image asset URL(s) directly from the visible image tile(s) and trigger downloads
 7. trigger new chat shortcut (`fireShortcut("o", "KeyO", { shift: true })`)
 8. wait briefly, then continue
 
-If this breaks, inspect the download selector and shortcut dispatch behavior.
+If this breaks, inspect the generated-image tile selector, the asset URL extraction, and the shortcut dispatch behavior.
 
 Retry prompts reuse `sendMessage(...)`, so each one waits for the composer/send button instead of requiring immediate sendability at the exact timeout moment.
-The download rename session no longer uses a short wall-clock timeout; hidden/background time pauses the rename timeout budget instead of consuming it.
 
 ## Array Range Semantics
 
@@ -203,19 +202,21 @@ If actual is `0` or `1`, check:
 - busy detection drift
 - message send blocked by generation state
 
-## DALL·E Download Buttons
+## Generated Image Downloads
 
-If `clickDallEDownloadButtons()` breaks, inspect image tool actions from `take_snapshot` and update this selector:
+The old per-tile download buttons are no longer present in the current ChatGPT image UI.
+`clickDallEDownloadButtons()` now works by:
 
-- `button[aria-label="Download this image"]`
-- `button[aria-label*="Download image" i]`
-- `button[data-testid*="download" i]` (fallback)
+1. finding visible generated-image tiles (currently `div[id^="image-"]` / `.group\\/imagegen-image`)
+2. extracting the current image asset URL from their `img` descendant
+3. fetching the `https://chatgpt.com/backend-api/estuary/content?...` asset directly
+4. downloading the fetched blob with an anchor
 
-Avoid utility-class selectors like `div.group-hover\\/dalle-image\\:visible button`; they are brittle and often change upstream.
-Prefer stable attributes (`data-testid`, `aria-label`) whenever possible.
-Operational note: in some chats, image controls are only reliably discoverable after manually scrolling to the top of the chat before running `clickDallEDownloadButtons()`.
-The downloader now throttles click bursts: after every 10 clicks it waits 1.1 seconds before continuing.
-Filename normalization is still best-effort under `@grant none`, but the interceptor now stays installed globally and keeps one active rename session alive across hidden-tab waits. Tune `DOWNLOAD_FILENAME_VISIBLE_TIMEOUT_MS` if a visible, foreground download path still takes unusually long.
+Prefer the asset URL over brittle hover-only controls.
+Use the tile/container plus `img[src*="/backend-api/estuary/content"]` as the primary detection path.
+The most stable discriminator currently observed is an `img` with alt text beginning with `Generated image:`.
+Operational note: in some chats, generated-image tiles are only mounted when scrolled into view, so scroll to the relevant part of the chat before running `clickDallEDownloadButtons()`.
+The downloader throttles bursts: after every 10 downloads it waits 1.1 seconds before continuing.
 
 ## Download Smoke Test Snippet
 
@@ -227,20 +228,19 @@ async () => {
     return { ok: false, reason: "clickDallEDownloadButtons is not available on window" };
   }
 
-  const expectedButtons = Array.from(
-    document.querySelectorAll(
-      'button[aria-label="Download this image"], button[aria-label*="Download image" i], button[data-testid*="download" i]'
-    )
-  ).filter((button) => !button.disabled);
+  const expectedTargets = Array.from(document.querySelectorAll('[id^="image-"], .group\\/imagegen-image'))
+    .filter((el) => {
+      const style = window.getComputedStyle(el);
+      const rect = el.getBoundingClientRect();
+      return style.display !== "none" && style.visibility !== "hidden" && rect.width > 0 && rect.height > 0;
+    })
+    .filter((el) => el.querySelector('img[src*="/backend-api/estuary/content"]'));
 
-  const originalClick = HTMLButtonElement.prototype.click;
-  let totalClicks = 0;
+  const originalAnchorClick = HTMLAnchorElement.prototype.click;
   let downloadClicks = 0;
 
-  HTMLButtonElement.prototype.click = function patchedClick() {
-    totalClicks += 1;
-    const label = `${this.getAttribute("aria-label") || ""} ${(this.textContent || "").trim()}`;
-    if (/download this image|download image/i.test(label)) {
+  HTMLAnchorElement.prototype.click = function patchedClick() {
+    if (this.hasAttribute("download")) {
       downloadClicks += 1;
     }
   };
@@ -248,13 +248,12 @@ async () => {
   try {
     await window.clickDallEDownloadButtons();
   } finally {
-    HTMLButtonElement.prototype.click = originalClick;
+    HTMLAnchorElement.prototype.click = originalAnchorClick;
   }
 
   return {
     ok: true,
-    expected: expectedButtons.length,
-    totalClicks,
+    expected: expectedTargets.length,
     downloadClicks
   };
 }
@@ -268,8 +267,8 @@ Expected result:
 If it fails, check:
 
 - exported global drift (`window.clickDallEDownloadButtons`)
-- download selector drift (`aria-label`/`data-testid`)
-- disabled state handling
+- generated-image tile selector drift
+- asset URL extraction drift
 
 ## Edit Policy
 
