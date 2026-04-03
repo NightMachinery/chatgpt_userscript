@@ -55,6 +55,15 @@ The [[./.codex/config.toml][MCP config]] requires Chrome to be running with the 
 /Applications/Google\ Chrome.app/Contents/MacOS/Google\ Chrome --remote-debugging-port=9222 --user-data-dir=/tmp/chrome-profile-stable
 #+end_src
 
+With proxy:
+#+begin_src zsh :eval never
+tmuxnew chrome-debug /Applications/Google\ Chrome.app/Contents/MacOS/Google\ Chrome \
+--remote-debugging-port=9222 \
+--user-data-dir=/tmp/chrome-profile-stable \
+--proxy-server="socks5://127.0.0.1:1081" \
+--proxy-bypass-list="localhost;127.0.0.1"
+#+end_src
+
 *Linux*
 
 #+begin_src :eval never
