@@ -35,6 +35,7 @@ clickDallEDownloadButtons();
 - In array helpers, progress and failure logs use absolute array indices (0-based), so ranges show as =from..to-1=.
 - =to= is an exclusive end index in array helpers.
 - =to= defaults to =0=, and =to=0= maps to end-of-array (send all items from =from=).
+- =sendMessageRepeatedlyArrayChooseFile(...)= skips prompts that are only whitespace after splitting by =sep=, and applies =from= / =to= to that filtered prompt list.
 - In =new_chat_image= array mode, downloaded image filenames are normalized to array indices: =x.ext=, =x_1.ext=, =x_2.ext=, ...
 - Filename normalization remains best-effort under =@grant none=, but the rename interceptor now stays armed across hidden/background-tab waits and only times out after =60000ms= of /visible/ page time.
 - Download helper targets current image download button attributes.

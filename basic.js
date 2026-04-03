@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         ChatGPT Message Helper
 // @namespace    https://chatgpt.com/
-// @version      1.1.8
+// @version      1.1.9
 // @description  Reliable message sending helpers for ChatGPT web UI changes.
 // @match        https://chatgpt.com/*
 // @grant        none
@@ -616,6 +616,30 @@
     return normalizedPrompts.length > 0 ? normalizedPrompts : CREATIVE_LICENSE_RETRY_PROMPTS;
   }
 
+  function normalizeMessageBatch(msgs, separator, options) {
+    let messages;
+    if (Array.isArray(msgs)) {
+      messages = msgs.map((msg) => String(msg));
+    } else if (typeof msgs === "string") {
+      messages = msgs.split(separator);
+    } else {
+      throw new Error("Expected msgs to be an array of strings or a string.");
+    }
+
+    if (!(options && options.skipWhitespaceOnlyMessages)) {
+      return {
+        messages,
+        skippedCount: 0
+      };
+    }
+
+    const filteredMessages = messages.filter((message) => message.trim().length > 0);
+    return {
+      messages: filteredMessages,
+      skippedCount: messages.length - filteredMessages.length
+    };
+  }
+
   async function waitForDownloadButtonVisibleWithRetry(previousButtons, retryPrompts) {
     const retryPromptQueue = normalizeRetryPrompts(retryPrompts);
     let retryCount = 0;
@@ -829,13 +853,11 @@
       useNewChat && options && options.continueOnImageDownloadTimeout
     );
 
-    let messages;
-    if (Array.isArray(msgs)) {
-      messages = msgs.map((msg) => String(msg));
-    } else if (typeof msgs === "string") {
-      messages = msgs.split(separator);
-    } else {
-      throw new Error("Expected msgs to be an array of strings or a string.");
+    const { messages, skippedCount } = normalizeMessageBatch(msgs, separator, options);
+    if (skippedCount > 0) {
+      console.log(
+        `Skipped ${skippedCount} whitespace-only prompt${skippedCount === 1 ? "" : "s"} while loading.`
+      );
     }
 
     if (messages.length === 0) {
@@ -1009,7 +1031,8 @@
     const fileText = await chooseFileAsText();
     const sendMode = normalizeSendMode(mode);
     await sendMessageRepeatedlyArray(fileText, sleep, sep, prefix, postfix, from, to, sendMode, {
-      continueOnImageDownloadTimeout: sendMode === SEND_MODES.NEW_CHAT_IMAGE
+      continueOnImageDownloadTimeout: sendMode === SEND_MODES.NEW_CHAT_IMAGE,
+      skipWhitespaceOnlyMessages: true
     });
   }
 

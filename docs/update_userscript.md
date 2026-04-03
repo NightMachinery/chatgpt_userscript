@@ -170,6 +170,7 @@ For `sendMessageRepeatedlyArray(...)` and `sendMessageRepeatedlyArrayChooseFile(
 - `from` is inclusive.
 - `to` is exclusive.
 - `to=0` maps to end-of-array (full range from `from` to the end).
+- `sendMessageRepeatedlyArrayChooseFile(...)` skips entries that are only whitespace after splitting by `sep`; `from`/`to` are applied after that filtering.
 
 ## Smoke Test Snippet
 
