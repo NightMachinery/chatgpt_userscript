@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         ChatGPT Message Helper
 // @namespace    https://chatgpt.com/
-// @version      1.1.10
+// @version      1.1.11
 // @description  Reliable message sending helpers for ChatGPT web UI changes.
 // @match        https://chatgpt.com/*
 // @grant        none
@@ -14,6 +14,10 @@
   ]);
   const GENERATED_IMAGE_ASSET_URL_PATTERN = /\/backend-api\/estuary\/content\b/i;
   const GENERATED_IMAGE_ALT_PATTERN = /^Generated image:/i;
+  const IMAGE_LIMIT_RESET_TEXT_PATTERN = /\blimit resets in\b/i;
+  const IMAGE_LIMIT_IMAGE_PATTERN = /\bimages?\b|\bimage generations?\b/i;
+  const IMAGE_LIMIT_WAIT_BUFFER_MS = 60000;
+  const IMAGE_LIMIT_WAIT_LOG_INTERVAL_MS = 60000;
   const SEND_MODES = Object.freeze({
     CONTINUOUS: "continuous",
     NEW_CHAT_IMAGE: "new_chat_image"
@@ -184,6 +188,163 @@
     );
   }
 
+  function normalizeWhitespace(value) {
+    return String(value ?? "")
+      .replace(/\s+/g, " ")
+      .trim();
+  }
+
+  function formatDurationParts(totalMs) {
+    const safeMs = Math.max(0, Math.trunc(Number(totalMs) || 0));
+    const totalSeconds = Math.ceil(safeMs / 1000);
+    const hours = Math.floor(totalSeconds / 3600);
+    const minutes = Math.floor((totalSeconds % 3600) / 60);
+    const seconds = totalSeconds % 60;
+    return { hours, minutes, seconds };
+  }
+
+  function formatDurationForLog(totalMs) {
+    const parts = formatDurationParts(totalMs);
+    const segments = [];
+    if (parts.hours > 0) {
+      segments.push(`${parts.hours} hour${parts.hours === 1 ? "" : "s"}`);
+    }
+    if (parts.minutes > 0) {
+      segments.push(`${parts.minutes} minute${parts.minutes === 1 ? "" : "s"}`);
+    }
+    if (parts.seconds > 0 || segments.length === 0) {
+      segments.push(`${parts.seconds} second${parts.seconds === 1 ? "" : "s"}`);
+    }
+    if (segments.length === 1) {
+      return segments[0];
+    }
+    return `${segments.slice(0, -1).join(", ")} and ${segments[segments.length - 1]}`;
+  }
+
+  function extractImageLimitWaitMs(text) {
+    const normalizedText = normalizeWhitespace(text);
+    if (!IMAGE_LIMIT_RESET_TEXT_PATTERN.test(normalizedText) || !IMAGE_LIMIT_IMAGE_PATTERN.test(normalizedText)) {
+      return null;
+    }
+
+    let totalMs = 0;
+    let matchedAnyUnit = false;
+    for (const match of normalizedText.matchAll(/(\d+)\s*(hour|hours|minute|minutes|second|seconds)\b/gi)) {
+      const amount = Number(match[1]);
+      const unit = String(match[2]).toLowerCase();
+      if (!Number.isFinite(amount)) {
+        continue;
+      }
+
+      matchedAnyUnit = true;
+      if (unit.startsWith("hour")) {
+        totalMs += amount * 60 * 60 * 1000;
+      } else if (unit.startsWith("minute")) {
+        totalMs += amount * 60 * 1000;
+      } else if (unit.startsWith("second")) {
+        totalMs += amount * 1000;
+      }
+    }
+
+    if (matchedAnyUnit) {
+      return totalMs;
+    }
+    if (/less than a minute/i.test(normalizedText)) {
+      return 60 * 1000;
+    }
+    return null;
+  }
+
+  function getAssistantTurnElements() {
+    return Array.from(document.querySelectorAll('[data-message-author-role="assistant"]'));
+  }
+
+  function getImageGenerationLimitResetState(previousAssistantTurnCount = 0) {
+    const assistantTurns = getAssistantTurnElements();
+    const startIndex = Math.max(0, Math.trunc(Number(previousAssistantTurnCount) || 0));
+
+    for (let index = assistantTurns.length - 1; index >= startIndex; index--) {
+      const turn = assistantTurns[index];
+      const text = normalizeWhitespace(turn.textContent || "");
+      const waitMs = extractImageLimitWaitMs(text);
+      if (waitMs === null) {
+        continue;
+      }
+
+      return {
+        turn,
+        turnIndex: index,
+        assistantTurnCount: assistantTurns.length,
+        text,
+        waitMs
+      };
+    }
+
+    return null;
+  }
+
+  async function waitForImageGenerationLimitResetState(limitState) {
+    if (!limitState || !Number.isFinite(limitState.waitMs)) {
+      throw new Error("Image generation limit reset state is not available.");
+    }
+
+    const waitMs = Math.max(0, limitState.waitMs) + IMAGE_LIMIT_WAIT_BUFFER_MS;
+    const startedAt = Date.now();
+    const deadline = startedAt + waitMs;
+    let nextLogAt = 0;
+
+    console.warn(`[image-limit] Detected image generation limit message: ${limitState.text}`);
+    console.warn(
+      `[image-limit] Waiting ${formatDurationForLog(waitMs)} until approximately ${new Date(deadline).toLocaleString()}.`
+    );
+
+    while (true) {
+      const remainingMs = deadline - Date.now();
+      if (remainingMs <= 0) {
+        break;
+      }
+
+      const now = Date.now();
+      if (now >= nextLogAt || remainingMs <= 60 * 1000) {
+        console.log(`[image-limit] Still waiting: ${formatDurationForLog(remainingMs)} remaining.`);
+        nextLogAt = now + IMAGE_LIMIT_WAIT_LOG_INTERVAL_MS;
+      }
+
+      const sleepMs =
+        remainingMs > 10 * 60 * 1000
+          ? Math.min(60 * 1000, remainingMs)
+          : remainingMs > 60 * 1000
+            ? Math.min(15 * 1000, remainingMs)
+            : Math.min(5 * 1000, remainingMs);
+      await delay(sleepMs);
+    }
+
+    const waitedMs = Date.now() - startedAt;
+    console.log(`[image-limit] Wait finished after ${formatDurationForLog(waitedMs)}.`);
+    return {
+      ...limitState,
+      waitedMs,
+      resumedAt: Date.now()
+    };
+  }
+
+  async function waitForImageGenerationLimitReset(previousAssistantTurnCount = 0) {
+    const limitState = getImageGenerationLimitResetState(previousAssistantTurnCount);
+    if (!limitState) {
+      console.log("[image-limit] No image generation limit reset message detected.");
+      return {
+        found: false,
+        waitMs: 0
+      };
+    }
+
+    const waitResult = await waitForImageGenerationLimitResetState(limitState);
+    return {
+      found: true,
+      ...waitResult
+    };
+  }
+
   function getAbsoluteUrl(value) {
     const rawValue = String(value ?? "").trim();
     if (rawValue.length === 0) {
@@ -331,17 +492,37 @@
     });
   }
 
-  async function waitForDownloadButtonVisible(checkInterval, timeout, previousButtons) {
+  async function waitForDownloadButtonVisible(checkInterval, timeout, previousButtons, options) {
     const intervalMs = checkInterval ?? 300;
     const timeoutSeconds = timeout ?? IMAGE_DOWNLOAD_TIMEOUT_SECONDS;
     const timeoutMs = timeoutSeconds * 1000;
-    const startTime = Date.now();
+    const waitOptions =
+      options && typeof options === "object"
+        ? options
+        : {
+            assistantTurnCount: 0
+          };
+    let deadline = Date.now() + timeoutMs;
 
-    while (Date.now() - startTime < timeoutMs) {
+    while (Date.now() < deadline) {
       const buttons = getNewDownloadButtons(previousButtons);
       if (buttons.length > 0) {
         return buttons;
       }
+
+      const imageLimitState = getImageGenerationLimitResetState(waitOptions.assistantTurnCount);
+      if (imageLimitState) {
+        waitOptions.assistantTurnCount = imageLimitState.turnIndex + 1;
+        const waitStart = Date.now();
+        const waitResult = await waitForImageGenerationLimitResetState(imageLimitState);
+        waitOptions.assistantTurnCount = Math.max(
+          waitOptions.assistantTurnCount,
+          waitResult.assistantTurnCount
+        );
+        deadline += Date.now() - waitStart;
+        continue;
+      }
+
       await delay(intervalMs);
     }
 
@@ -824,14 +1005,25 @@
     };
   }
 
-  async function waitForDownloadButtonVisibleWithRetry(previousButtons, retryPrompts) {
+  async function waitForDownloadButtonVisibleWithRetry(previousButtons, retryPrompts, options) {
     const retryPromptQueue = normalizeRetryPrompts(retryPrompts);
     let retryCount = 0;
+    const waitOptions =
+      options && typeof options === "object"
+        ? options
+        : {
+            assistantTurnCount: 0
+          };
 
     while (true) {
       try {
         return {
-          buttons: await waitForDownloadButtonVisible(undefined, undefined, previousButtons),
+          buttons: await waitForDownloadButtonVisible(
+            undefined,
+            undefined,
+            previousButtons,
+            waitOptions
+          ),
           retryCount
         };
       } catch (error) {
@@ -858,6 +1050,7 @@
           undefined,
           IMAGE_DOWNLOAD_TIMEOUT_SECONDS
         );
+        waitOptions.assistantTurnCount = getAssistantTurnElements().length;
         retryCount = nextRetryNumber;
       }
     }
@@ -964,10 +1157,14 @@
       options && typeof options.filenameBaseBuilder === "function"
         ? options.filenameBaseBuilder
         : undefined;
+    const assistantTurnCount =
+      options && Number.isFinite(options.assistantTurnCount) ? options.assistantTurnCount : 0;
 
     if (useNewChat) {
       console.log("Waiting for generated image...");
-      const waitResult = await waitForDownloadButtonVisibleWithRetry(previousButtons);
+      const waitResult = await waitForDownloadButtonVisibleWithRetry(previousButtons, undefined, {
+        assistantTurnCount
+      });
       const newButtons = waitResult.buttons;
       const clickedCount = await clickDownloadButtons(newButtons, undefined, {
         filenameBaseBuilder
@@ -1004,9 +1201,12 @@
       const previousButtons = useNewChat
         ? new Set(getDownloadButtons().map((button) => getDownloadTargetKey(button)).filter(Boolean))
         : undefined;
+      const previousAssistantTurnCount = useNewChat ? getAssistantTurnElements().length : 0;
       await sendMessage(msg);
       console.log(`Message sent (${i + 1}/${count}).`);
-      await handlePostSend(i, count, sleepDuration, sleepSeconds, useNewChat, previousButtons);
+      await handlePostSend(i, count, sleepDuration, sleepSeconds, useNewChat, previousButtons, {
+        assistantTurnCount: previousAssistantTurnCount
+      });
     }
   }
 
@@ -1087,6 +1287,7 @@
       const previousButtons = useNewChat
         ? new Set(getDownloadButtons().map((button) => getDownloadTargetKey(button)).filter(Boolean))
         : undefined;
+      const previousAssistantTurnCount = useNewChat ? getAssistantTurnElements().length : 0;
       await sendMessage(fullPrompt);
       console.log(`Message sent (${absoluteIndex}/${lastIndex}).`);
 
@@ -1101,6 +1302,7 @@
           {
             progressCurrent: absoluteIndex,
             progressTotal: lastIndex,
+            assistantTurnCount: previousAssistantTurnCount,
             filenameBaseBuilder: useNewChat
               ? (downloadIndex) =>
                   downloadIndex === 0 ? `${absoluteIndex}` : `${absoluteIndex}_${downloadIndex}`
@@ -1258,6 +1460,7 @@
   window.sendMessageRepeatedlyArray = sendMessageRepeatedlyArray;
   window.sendMessageRepeatedlyArrayChooseFile = sendMessageRepeatedlyArrayChooseFile;
   window.clickDallEDownloadButtons = clickDallEDownloadButtons;
+  window.waitForImageGenerationLimitReset = waitForImageGenerationLimitReset;
 
   // Keep these globals so this call style works in console:
   // sendMessageRepeatedly("Thanks, continue.", n=2, sleep=60,)

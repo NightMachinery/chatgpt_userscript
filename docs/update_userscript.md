@@ -154,9 +154,10 @@ When `mode === "new_chat_image"` in repeated send helpers, current flow is:
 3. if that wait times out, send the next retry prompt using the normal send flow so the helper can wait for the composer/send button
 4. repeat the generated-image wait after each retry prompt until an image appears or the retry queue is exhausted
 5. the default retry queue is the creative-license guidance prompt followed by `"Generate!"`
-6. fetch the generated image asset URL(s) directly from the visible image tile(s) and trigger downloads
-7. trigger new chat shortcut (`fireShortcut("o", "KeyO", { shift: true })`)
-8. wait briefly, then continue
+6. if ChatGPT instead replies with an image-limit reset message (`...limit resets in ...`), parse the duration, log the wait, wait through the reset window, and then resume
+7. fetch the generated image asset URL(s) directly from the visible image tile(s) and trigger downloads
+8. trigger new chat shortcut (`fireShortcut("o", "KeyO", { shift: true })`)
+9. wait briefly, then continue
 
 If this breaks, inspect the generated-image tile selector, the asset URL extraction, and the shortcut dispatch behavior.
 
@@ -217,6 +218,22 @@ Use the tile/container plus `img[src*="/backend-api/estuary/content"]` as the pr
 The most stable discriminator currently observed is an `img` with alt text beginning with `Generated image:`.
 Operational note: in some chats, generated-image tiles are only mounted when scrolled into view, so scroll to the relevant part of the chat before running `clickDallEDownloadButtons()`.
 The downloader throttles bursts: after every 10 downloads it waits 1.1 seconds before continuing.
+
+## Image Limit Reset Detection
+
+If image generation is rate-limited, the current UI returns an assistant text response such as:
+
+- `You've hit the team plan limit for image generations requests. You can create more images when the limit resets in 8 hours and 22 minutes.`
+
+Prefer detecting this from assistant turn text (`[data-message-author-role="assistant"]`) rather than brittle styling hooks.
+Current implementation looks for assistant text that:
+
+- mentions images / image generations
+- contains `limit resets in`
+- includes parseable time units like hours / minutes / seconds
+
+When detected, the script logs the message, waits for the parsed duration plus a one-minute buffer, logs progress roughly once per minute, and then resumes.
+For manual debugging, `window.waitForImageGenerationLimitReset(previousAssistantTurnCount=0)` is exported.
 
 ## Download Smoke Test Snippet
 
