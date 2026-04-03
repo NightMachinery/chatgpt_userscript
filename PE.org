@@ -2,6 +2,97 @@
 
 * _
 #+BEGIN_SRC markdown
+```
+tmuxnew chrome-debug /Applications/Google\ Chrome.app/Contents/MacOS/Google\ Chrome \
+--remote-debugging-port=9222 \
+--user-data-dir=/tmp/chrome-profile-stable \
+--proxy-server="socks5://127.0.0.1:1081" \
+--proxy-bypass-list="localhost;127.0.0.1"
+```
+can we disable all tab freezing/suspending etc.? I want unfocused tabs to work fully (I am running some automations on them).
+#+END_SRC
+
+#+BEGIN_SRC markdown
+```
+disable Memory Saver and Energy Saver,
+```
+can we do this via cli flags?
+#+END_SRC
+
+** @GPT5.4T [jalali:1405/01/14/15:56]
+Yes --- *partly*. You can get much closer to “background tabs keep running” with a few launch flags, but in current Chrome there is *not* a clean “make unfocused tabs identical to focused tabs” master switch. Chrome still has page lifecycle, freezing, discarding, and background rendering heuristics, and newer advice you may see online is partly stale. ([[https://developer.chrome.com/docs/web-platform/page-lifecycle-api][Chrome for Developers]])
+
+Add these to your launch command:
+
+#+begin_src sh :eval never
+tmuxnew chrome-debug /Applications/Google\ Chrome.app/Contents/MacOS/Google\ Chrome \
+  --remote-debugging-port=9222 \
+  --user-data-dir=/tmp/chrome-profile-stable \
+  --proxy-server="socks5://127.0.0.1:1081" \
+  --proxy-bypass-list="localhost;127.0.0.1" \
+  --disable-background-timer-throttling \
+  --disable-renderer-backgrounding \
+  --disable-backgrounding-occluded-windows
+#+end_src
+
+Those three are still present in current Chromium: =--disable-background-timer-throttling= disables timer-task throttling for background pages, =--disable-renderer-backgrounding= prevents renderer process backgrounding, and =--disable-backgrounding-occluded-windows= stops Chrome from treating an occluded window as backgrounded. ([[https://peter.sh/experiments/chromium-command-line-switches/][Peter Beverloo]])
+
+Also turn off the built-in performance modes in Chrome itself. *Memory Saver* proactively discards background tabs, and *Energy Saver* can stop eligible CPU-intensive background tabs; Chrome's own help page says both live under *Settings → Performance*, and it also lets you keep specific sites active. ([[https://support.google.com/chrome/answer/12929150?hl=en][Google Help]])
+
+The two big limits to know about:
+
+1. *=requestAnimationFrame()= still does not run in background tabs*, so anything relying on visual-frame callbacks will not behave like a focused tab. ([[https://developer.chrome.com/blog/background_tabs/][Chrome for Developers]])
+2. Chrome/Blink still treats freezing/discarding as part of the page lifecycle. Chromium's scheduler docs say desktop freezes only “eligible” background pages based on heuristics, and Chrome's lifecycle docs say hidden tabs may be frozen or discarded to conserve resources. ([[https://chromium.googlesource.com/chromium/src/%2B/HEAD/third_party/blink/renderer/platform/scheduler/TaskSchedulingInBlink.md][Chromium Git Repositories]])
+
+One outdated flag to skip: =--disable-features=IntensiveWakeUpThrottling=. Chromium removed that feature flag and made the behavior default, so old recipes using it are stale. ([[https://chromium.googlesource.com/chromium/src/%2B/8e7d6a29bfb67694d9d850a69d17b93e43d6791e][Chromium Git Repositories]])
+
+For your use case, the most reliable setup is:
+
+- launch with the 3 flags above,
+- disable *Memory Saver* and *Energy Saver*,
+- keep the automation tabs in a visible, non-occluded Chrome window when possible,
+- avoid relying on =requestAnimationFrame()= for background work; prefer timers, network events, or automation that runs outside the page. ([[https://peter.sh/experiments/chromium-command-line-switches/][Peter Beverloo]])
+
+You can verify what Chrome is doing via =chrome://discards=, which Chrome documents as the place to inspect and test discards. ([[https://developer.chrome.com/blog/memory-and-energy-saver-mode/][Chrome for Developers]])
+
+If you want, I can rewrite your exact command with a couple of extra “automation-friendly” flags as well.
+
+*** _
+Not as a *normal supported startup flag*, no. I don't see dedicated current Chromium switches for “Memory Saver” or “Energy Saver” in the current switch index, while Chromium's own config docs treat these as separate config surfaces and Chrome documents them as settings/policies instead. ([[https://peter.sh/experiments/chromium-command-line-switches/][Peter Beverloo]])
+
+The supported way to force them off is *policy*, not =--foo= CLI flags:
+
+- *Memory Saver* → =HighEfficiencyModeEnabled = false= disables the setting. Chrome Enterprise says this policy enables or disables High Efficiency Mode, which discards background tabs after some time. ([[https://chromeenterprise.google/policies/high-efficiency-mode-enabled/?utm_source=chatgpt.com][Chrome Enterprise]])
+- *Energy Saver* → =BatterySaverModeAvailability = 0= disables Battery Saver Mode. Chrome Enterprise documents =0= as *Disabled*. ([[https://chromeenterprise.google/policies/battery-saver-mode-availability/?utm_source=chatgpt.com][Chrome Enterprise]])
+
+On *macOS*, Chrome's official management path is a *managed plist / configuration profile*. Google's Mac quickstart says to customize =com.google.Chrome.plist= and convert/deploy it as a configuration profile, and Chromium's policy template docs say Mac policies are defined in a plist file. ([[https://support.google.com/chrome/a/answer/9020077?hl=en][Google Help]])
+
+A minimal managed plist would look like this:
+
+#+begin_src xml :eval never
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>HighEfficiencyModeEnabled</key>
+  <false/>
+  <key>BatterySaverModeAvailability</key>
+  <integer>0</integer>
+</dict>
+</plist>
+#+end_src
+
+So the practical answer is:
+
+- *CLI only:* no clean supported flags for those two toggles. ([[https://peter.sh/experiments/chromium-command-line-switches/][Peter Beverloo]])
+- *Reliable way:* disable them in *Settings → Performance*, or enforce them via *policy/profile*. Chrome's help page also documents both toggles there. ([[https://support.google.com/chrome/answer/12929150?hl=en&utm_source=chatgpt.com][Google Help]])
+
+For your automation case, one more useful policy exists: =TabDiscardingExceptions=, which keeps matching URLs from ever being discarded, including under Memory Saver. That can be better than globally changing everything if only a few domains need to stay alive. ([[https://chromeenterprise.google/policies/tab-discarding-exceptions/?utm_source=chatgpt.com][Chrome Enterprise]])
+
+I can give you a ready-to-apply macOS =.mobileconfig= or a shell script that writes the managed plist in the right place.
+
+* _
+#+BEGIN_SRC markdown
 read docs/update_userscript.md . `clickDallEDownloadButtons()` seems to have broken.  investigate. I have the remote chrome open at a page with an image already generated,  you just have to find the best way to detect the generated image and how to download it.  perhaps we should find the asset url directly.
 #+END_SRC
 
