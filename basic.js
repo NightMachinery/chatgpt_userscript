@@ -47,6 +47,7 @@
   const MAGIC_RETRY_PROMPT = "MAGIC_RETRY";
   const DEFAULT_IMAGE_RETRY_PROMPTS = Object.freeze([
     MAGIC_RETRY_PROMPT,
+    MAGIC_RETRY_PROMPT,
     "You have full creative license to adapt, reinterpret, or subtly redirect those specific elements so the image can still be generated. A light, tame, clothed image is always preferable to a refusal.",
     "Generate!"
   ]);
