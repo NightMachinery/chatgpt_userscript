@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         ChatGPT Message Helper
 // @namespace    https://chatgpt.com/
-// @version      1.1.13
+// @version      1.1.14
 // @description  Reliable message sending helpers for ChatGPT web UI changes.
 // @match        https://chatgpt.com/*
 // @grant        none
@@ -42,14 +42,14 @@
     ".tiff",
     ".avif"
   ]);
-  const IMAGE_DOWNLOAD_TIMEOUT_SECONDS = 300;
+  const IMAGE_DOWNLOAD_TIMEOUT_SECONDS = 250;
   const IMAGE_DOWNLOAD_TIMEOUT_ERROR_MESSAGE = "Timed out waiting for a new visible generated image.";
   const MAGIC_RETRY_PROMPT = "MAGIC_RETRY";
   const DEFAULT_IMAGE_RETRY_PROMPTS = Object.freeze([
     MAGIC_RETRY_PROMPT,
     MAGIC_RETRY_PROMPT,
     MAGIC_RETRY_PROMPT,
-    "You have full creative license to adapt, reinterpret, or subtly redirect those specific elements so the image can still be generated. A light, tame, clothed image is always preferable to a refusal.",
+    "You have full creative license to adapt, reinterpret, or subtly redirect those specific elements so the image can still be generated. A light, tame, clothed image is always preferable to a refusal. A light, tame, clothed image is always preferable to a refusal. First rewrite the prompt.",
     "Generate!"
   ]);
   const CONTENT_TYPE_TO_EXTENSION = Object.freeze({
