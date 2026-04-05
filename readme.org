@@ -37,7 +37,7 @@ waitForImageGenerationLimitReset();
 - =sleep= in =sendMessageRepeatedly= is in seconds.
 - =timeout= in =sendMessage= is in seconds.
 - =mode= defaults to =continuous=.
-- =mode="new_chat_image"= waits for a visible generated image; on each timeout it runs the next retry step (by default: =MAGIC_RETRY=, then the creative-license guidance, then =Generate!=), waits again, then downloads and opens a new chat on success.
+- =mode="new_chat_image"= always opens a fresh chat before the first prompt, then waits for a visible generated image; on each timeout it runs the next retry step (by default: =MAGIC_RETRY=, then the creative-license guidance, then =Generate!=), waits again, then downloads and opens a new chat on success.
 - Once a generated image is visible, the downloader retries that same image forever with backoff (=1s → 2s → 4s ... capped at 60s=) and a per-attempt fetch timeout of 45 seconds; it re-resolves the current tile/asset URL on every retry instead of regenerating a new image.
 - =skipCurrentPrompt()= works during active array runs only (=sendMessageRepeatedlyArray(...)= / =sendMessageRepeatedlyArrayChooseFile(...)=). It cooperatively skips the current prompt at the next safe checkpoint and advances to the next selected prompt.
 - If =skipCurrentPrompt()= is used while a generated image is stuck in download-retry, the script saves a small diagnostic text file (prompt, prompt index, image index, asset URL, last error, retry count) before advancing.

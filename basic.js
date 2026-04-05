@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         ChatGPT Message Helper
 // @namespace    https://chatgpt.com/
-// @version      1.1.17
+// @version      1.1.18
 // @description  Reliable message sending helpers for ChatGPT web UI changes.
 // @match        https://chatgpt.com/*
 // @grant        none
@@ -78,6 +78,7 @@
     RETRYING_PROMPT: "retrying_prompt",
     DOWNLOADING_IMAGES: "downloading_images",
     SLEEPING_BEFORE_NEXT_PROMPT: "sleeping_before_next_prompt",
+    OPENING_NEW_CHAT_BEFORE_START: "opening_new_chat_before_start",
     OPENING_NEW_CHAT_AFTER_SUCCESS: "opening_new_chat_after_success",
     OPENING_NEW_CHAT_AFTER_SKIP: "opening_new_chat_after_skip",
     OPENING_NEW_CHAT_FOR_RETRY: "opening_new_chat_for_retry",
@@ -2128,6 +2129,11 @@
     const outputTarget =
       useNewChat && count > 0 ? await resolveOutputTarget(pickOutputDir) : null;
 
+    if (useNewChat && count > 0) {
+      console.log("[new_chat_image] Opening a fresh chat before starting the run.");
+      await openNewChat();
+    }
+
     for (let i = 0; i < count; i++) {
       const previousButtons = useNewChat
         ? new Set(getDownloadButtons().map((button) => getDownloadTargetKey(button)).filter(Boolean))
@@ -2288,6 +2294,15 @@
     activeArrayRunController = arrayRunController;
 
     try {
+      if (useNewChat && selectedMessages.length > 0) {
+        setArrayRunPhase(arrayRunController, ARRAY_RUN_PHASES.OPENING_NEW_CHAT_BEFORE_START);
+        console.log("[new_chat_image] Opening a fresh chat before starting the array run.");
+        await openNewChat({
+          arrayRunController,
+          phase: ARRAY_RUN_PHASES.OPENING_NEW_CHAT_BEFORE_START
+        });
+      }
+
       for (let i = 0; i < selectedMessages.length; i++) {
         const absoluteIndex = fromIndex + i;
         const fullPrompt = `${prefixText}${selectedMessages[i]}${postfixText}`;

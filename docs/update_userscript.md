@@ -151,17 +151,18 @@ Do not click random composer buttons by class only; many look similar (voice, di
 
 When `mode === "new_chat_image"` in repeated send helpers, current flow is:
 
-1. send prompt
-2. wait until a visible generated image appears for the newest response
-3. if ChatGPT instead replies with an image-limit reset message (`...limit resets in ...`), parse the duration, log the wait, wait through the reset window, then retry by opening a new chat and resending the original prompt
-4. otherwise, if the image wait times out, run the next retry step
-5. retry steps can be normal prompts or the special sentinel `MAGIC_RETRY`
-6. `MAGIC_RETRY` means: open a new chat and resend the original prompt
-7. the default retry queue is `MAGIC_RETRY`, then the creative-license guidance prompt, then `"Generate!"`
-8. fetch the generated image asset URL(s) directly from the visible image tile(s) and trigger downloads
-9. if download acquisition fails after the image is already visible, keep retrying that same image forever with backoff and a 45-second per-attempt timeout; do not regenerate a fresh image just because download fetches are flaky
-10. trigger new chat shortcut (`fireShortcut("o", "KeyO", { shift: true })`)
-11. wait briefly, then continue
+1. open a fresh chat before the first prompt, even if the user launched the helper from an existing conversation
+2. send prompt
+3. wait until a visible generated image appears for the newest response
+4. if ChatGPT instead replies with an image-limit reset message (`...limit resets in ...`), parse the duration, log the wait, wait through the reset window, then retry by opening a new chat and resending the original prompt
+5. otherwise, if the image wait times out, run the next retry step
+6. retry steps can be normal prompts or the special sentinel `MAGIC_RETRY`
+7. `MAGIC_RETRY` means: open a new chat and resend the original prompt
+8. the default retry queue is `MAGIC_RETRY`, then the creative-license guidance prompt, then `"Generate!"`
+9. fetch the generated image asset URL(s) directly from the visible image tile(s) and trigger downloads
+10. if download acquisition fails after the image is already visible, keep retrying that same image forever with backoff and a 45-second per-attempt timeout; do not regenerate a fresh image just because download fetches are flaky
+11. trigger new chat shortcut (`fireShortcut("o", "KeyO", { shift: true })`)
+12. wait briefly, then continue
 
 If this breaks, inspect the generated-image tile selector, the asset URL extraction, and the shortcut dispatch behavior.
 
