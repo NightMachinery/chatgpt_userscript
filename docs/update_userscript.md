@@ -8,12 +8,12 @@ Keep these APIs working:
 
 - `promptSet(msg)`
 - `sendMessage(msg, checkInterval, sleep, timeout)`
-- `sendMessageRepeatedly(msg, n, sleep, mode)`
-- `sendMessageRepeatedlyArray(msgs, sleep, sep, prefix, postfix, from, to, mode)`
-- `sendMessageRepeatedlyArrayChooseFile(sleep, sep, prefix, postfix, from, to, mode)`
+- `sendMessageRepeatedly(msg, n, sleep, mode, output_dir, pick_output_dir)`
+- `sendMessageRepeatedlyArray(msgs, sleep, sep, prefix, postfix, from, to, mode, output_dir, pick_output_dir)`
+- `sendMessageRepeatedlyArrayChooseFile(sleep, sep, prefix, postfix, from, to, mode, output_dir, pick_output_dir)`
 - `openNewChat()`
 - `skipCurrentPrompt()`
-- `clickDallEDownloadButtons()`
+- `clickDallEDownloadButtons(output_dir, pick_output_dir)`
 
 Required call style to preserve:
 
@@ -227,13 +227,15 @@ The old per-tile download buttons are no longer present in the current ChatGPT i
 1. finding visible generated-image tiles (currently `div[id^="image-"]` / `.group\\/imagegen-image`)
 2. extracting the current image asset URL from their `img` descendant
 3. fetching the `https://chatgpt.com/backend-api/estuary/content?...` asset directly
-4. downloading the fetched blob with an anchor
+4. either downloading the fetched blob with an anchor, or writing it into a user-picked folder when `pick_output_dir=true`
 
 Prefer the asset URL over brittle hover-only controls.
 Use the tile/container plus `img[src*="/backend-api/estuary/content"]` as the primary detection path.
 The most stable discriminator currently observed is an `img` with alt text beginning with `Generated image:`.
 Operational note: in some chats, generated-image tiles are only mounted when scrolled into view, so scroll to the relevant part of the chat before running `clickDallEDownloadButtons()`.
 The downloader throttles bursts: after every 10 downloads it waits 1.1 seconds before continuing.
+When `pick_output_dir=true`, the script uses `showDirectoryPicker({ mode: "readwrite", startIn: "downloads", id: "chatgpt-userscript-output" })` once at the start, then creates/uses a sanitized `output_dir` subfolder under the chosen directory. If `pick_output_dir` is false/omitted, `output_dir` is ignored and native downloads are used.
+If picked-folder mode breaks, inspect the File System Access API path (`showDirectoryPicker`, `getDirectoryHandle`, `getFileHandle`, `createWritable`) in addition to the image selectors.
 
 ## Image Limit Reset Detection
 
