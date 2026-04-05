@@ -159,8 +159,9 @@ When `mode === "new_chat_image"` in repeated send helpers, current flow is:
 6. `MAGIC_RETRY` means: open a new chat and resend the original prompt
 7. the default retry queue is `MAGIC_RETRY`, then the creative-license guidance prompt, then `"Generate!"`
 8. fetch the generated image asset URL(s) directly from the visible image tile(s) and trigger downloads
-9. trigger new chat shortcut (`fireShortcut("o", "KeyO", { shift: true })`)
-10. wait briefly, then continue
+9. if download acquisition fails after the image is already visible, keep retrying that same image forever with backoff and a 45-second per-attempt timeout; do not regenerate a fresh image just because download fetches are flaky
+10. trigger new chat shortcut (`fireShortcut("o", "KeyO", { shift: true })`)
+11. wait briefly, then continue
 
 If this breaks, inspect the generated-image tile selector, the asset URL extraction, and the shortcut dispatch behavior.
 
@@ -187,6 +188,7 @@ Current behavior:
 - if the current prompt is still pending (send / retry / image wait / limit wait / download), the current prompt is skipped
 - if the run is in an inter-prompt delay, the delay is shortened and the next prompt starts immediately
 - in `new_chat_image` mode, if the skipped prompt was already sent, the runner opens a fresh new chat before continuing
+- if the skip happens during repeated generated-image download retries, the script first saves a diagnostic text file containing the prompt, prompt index, image index, target key, last asset URL, last error, and retry count
 
 ## Smoke Test Snippet
 
@@ -235,7 +237,10 @@ The most stable discriminator currently observed is an `img` with alt text begin
 Operational note: in some chats, generated-image tiles are only mounted when scrolled into view, so scroll to the relevant part of the chat before running `clickDallEDownloadButtons()`.
 The downloader throttles bursts: after every 10 downloads it waits 1.1 seconds before continuing.
 When `pick_output_dir=true`, the script uses `showDirectoryPicker({ mode: "readwrite", startIn: "downloads", id: "chatgpt-userscript-output" })` once at the start, and the picked folder is the exact final destination. If `pick_output_dir` is false/omitted, native downloads are used.
+After a generated image is visible, download acquisition is retried forever on that same image target: each attempt re-resolves the current tile and asset URL, uses `fetch(..., { credentials: "include", cache: "no-store" })`, times out after 45 seconds, and backs off `1s -> 2s -> 4s ...` capped at 60 seconds.
+Retryable download failures include missing/remounted tiles, missing asset URLs, `TypeError: Failed to fetch`, non-OK estuary responses, and `response.blob()` failures. Picked-directory write failures are *not* retried; they should still fail fast.
 If picked-folder mode breaks, inspect the File System Access API path (`showDirectoryPicker`, `getDirectoryHandle`, `getFileHandle`, `createWritable`) in addition to the image selectors.
+Browser console noise from ChatGPT itself is often benign. In particular, `Permissions-Policy ... browsing-topics`, `connectors/check 400`, `sentinel/ping 400`, and the page's own `net::ERR_HTTP2_PING_FAILED` lines should not be treated as userscript failures unless the script's own `[download-retry]` / thrown errors also indicate a problem.
 
 ## Image Limit Reset Detection
 

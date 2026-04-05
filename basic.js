@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         ChatGPT Message Helper
 // @namespace    https://chatgpt.com/
-// @version      1.1.16
+// @version      1.1.17
 // @description  Reliable message sending helpers for ChatGPT web UI changes.
 // @match        https://chatgpt.com/*
 // @grant        none
@@ -27,6 +27,11 @@
   });
   const DOWNLOAD_CLICK_BURST_SIZE = 10;
   const DOWNLOAD_CLICK_BURST_DELAY_MS = 1100;
+  const DOWNLOAD_FETCH_TIMEOUT_MS = 45000;
+  const DOWNLOAD_FETCH_SKIP_POLL_MS = 250;
+  const DOWNLOAD_RETRY_INITIAL_DELAY_MS = 1000;
+  const DOWNLOAD_RETRY_MAX_DELAY_MS = 60000;
+  const DOWNLOAD_RETRY_HEARTBEAT_MS = 5 * 60 * 1000;
   const DOWNLOAD_FILENAME_VISIBLE_TIMEOUT_MS = 60000;
   const DOWNLOAD_FILENAME_SESSION_POLL_MS = 500;
   const OUTPUT_DIRECTORY_PICKER_ID = "chatgpt-userscript-output";
@@ -652,8 +657,9 @@
     return fallbackImage instanceof HTMLImageElement ? String(fallbackImage.alt || "").trim() : "";
   }
 
-  function isLikelyGeneratedImageElement(image) {
-    if (!(image instanceof HTMLImageElement) || !isElementVisible(image)) {
+  function isLikelyGeneratedImageElement(image, options) {
+    const includeHidden = Boolean(options && options.includeHidden);
+    if (!(image instanceof HTMLImageElement) || (!includeHidden && !isElementVisible(image))) {
       return false;
     }
 
@@ -690,13 +696,14 @@
     }
   }
 
-  function getDownloadButtons() {
+  function getDownloadButtons(options) {
+    const includeHidden = Boolean(options && options.includeHidden);
     const targets = [];
     const seenElements = new Set();
 
     for (const selector of GENERATED_IMAGE_TARGET_SELECTORS) {
       for (const target of document.querySelectorAll(selector)) {
-        if (seenElements.has(target) || !isElementVisible(target)) {
+        if (seenElements.has(target) || (!includeHidden && !isElementVisible(target))) {
           continue;
         }
 
@@ -717,7 +724,9 @@
     const fallbackTargets = [];
     const seenKeys = new Set();
     for (const image of document.querySelectorAll('img[alt^="Generated image:" i], img')) {
-      if (!isLikelyGeneratedImageElement(image)) {
+      if (!isLikelyGeneratedImageElement(image, {
+        includeHidden
+      })) {
         continue;
       }
 
@@ -831,6 +840,282 @@
       return `Saved "${filename}" to ${describeOutputTarget(outputTarget)}.`;
     }
     return `Downloaded "${filename}".`;
+  }
+
+  function formatErrorForLog(error) {
+    if (error instanceof Error) {
+      return error.message || error.name || "Unknown error";
+    }
+    return String(error ?? "Unknown error");
+  }
+
+  function formatErrorForDiagnostic(error) {
+    if (error instanceof Error) {
+      return error.stack || `${error.name}: ${error.message}`;
+    }
+
+    try {
+      return typeof error === "string" ? error : JSON.stringify(error, null, 2);
+    } catch (_) {
+      return String(error ?? "Unknown error");
+    }
+  }
+
+  function getDownloadRetryDelayMs(retryCount) {
+    const safeRetryCount = Math.max(1, Math.trunc(Number(retryCount) || 1));
+    return Math.min(
+      DOWNLOAD_RETRY_MAX_DELAY_MS,
+      DOWNLOAD_RETRY_INITIAL_DELAY_MS * (2 ** Math.max(0, safeRetryCount - 1))
+    );
+  }
+
+  function getGeneratedImageTargetLabel(downloadIndex) {
+    return Number.isFinite(downloadIndex) ? `generated image ${downloadIndex + 1}` : "generated image";
+  }
+
+  function resolveGeneratedImageTargetForRetry(targetKey, fallbackTarget) {
+    if (typeof targetKey === "string" && targetKey.length > 0) {
+      const matchingTarget = getDownloadButtons({
+        includeHidden: true
+      }).find((candidate) => getDownloadTargetKey(candidate) === targetKey);
+      if (matchingTarget) {
+        return matchingTarget;
+      }
+    }
+
+    if (fallbackTarget instanceof Element) {
+      const assetUrl = getGeneratedImageAssetUrl(fallbackTarget);
+      if (GENERATED_IMAGE_ASSET_URL_PATTERN.test(assetUrl)) {
+        return fallbackTarget;
+      }
+    }
+
+    return null;
+  }
+
+  function createGeneratedImageDownloadAttemptTimeoutError(assetUrl) {
+    const error = new Error(
+      `Timed out fetching generated image asset after ${Math.round(DOWNLOAD_FETCH_TIMEOUT_MS / 1000)} seconds: ${assetUrl}`
+    );
+    error.generatedImageDownloadAttemptTimeout = true;
+    return error;
+  }
+
+  function buildSkippedDownloadDiagnosticContent(details) {
+    const lines = [
+      `timestamp: ${new Date().toISOString()}`,
+      `prompt_index: ${details && details.promptIndex !== null ? details.promptIndex : ""}`,
+      `image_index: ${details && details.downloadIndex !== null ? details.downloadIndex : ""}`,
+      `retry_count: ${details && Number.isFinite(details.retryCount) ? details.retryCount : 0}`,
+      `target_key: ${details && details.targetKey ? details.targetKey : ""}`,
+      `last_asset_url: ${details && details.assetUrl ? details.assetUrl : ""}`,
+      "last_error:",
+      formatErrorForDiagnostic(details && details.lastError ? details.lastError : "No recorded error."),
+      "",
+      "prompt:",
+      details && details.promptText ? details.promptText : ""
+    ];
+    return lines.join("\n");
+  }
+
+  async function saveSkippedDownloadDiagnostic(details) {
+    try {
+      const filename = await downloadTextFile(
+        buildSkippedDownloadDiagnosticContent(details),
+        `skipped_download_prompt_${details && details.promptIndex !== null ? details.promptIndex : "unknown"}_image_${details && details.downloadIndex !== null ? details.downloadIndex : "unknown"}`,
+        details && details.outputTarget
+      );
+      console.warn(
+        `[download-retry] Saved skip diagnostic to "${filename}" in ${describeOutputTarget(details && details.outputTarget)}.`
+      );
+      return filename;
+    } catch (error) {
+      console.warn(
+        `[download-retry] Failed to save skip diagnostic: ${formatErrorForLog(error)}`,
+        error
+      );
+      return null;
+    }
+  }
+
+  async function fetchGeneratedImageBlobAttempt(assetUrl, options) {
+    const arrayRunController = options && options.arrayRunController;
+    const abortController = new AbortController();
+    let abortReason = null;
+    const abortFetch = (reason, error) => {
+      if (abortReason !== null || abortController.signal.aborted) {
+        return;
+      }
+
+      abortReason = {
+        reason,
+        error
+      };
+
+      try {
+        abortController.abort(error);
+      } catch (_) {
+        abortController.abort();
+      }
+    };
+
+    const timeoutId = window.setTimeout(() => {
+      abortFetch("timeout", createGeneratedImageDownloadAttemptTimeoutError(assetUrl));
+    }, DOWNLOAD_FETCH_TIMEOUT_MS);
+    const skipIntervalId = isActiveArrayRunController(arrayRunController)
+      ? window.setInterval(() => {
+          if (arrayRunController.skipRequested) {
+            abortFetch(
+              "skip",
+              createSkipCurrentPromptError(arrayRunController, ARRAY_RUN_PHASES.DOWNLOADING_IMAGES)
+            );
+          }
+        }, DOWNLOAD_FETCH_SKIP_POLL_MS)
+      : null;
+
+    try {
+      const response = await fetch(assetUrl, {
+        credentials: "include",
+        cache: "no-store",
+        signal: abortController.signal
+      });
+      if (abortReason && abortReason.error) {
+        throw abortReason.error;
+      }
+      if (!response.ok) {
+        throw new Error(`Failed to fetch generated image asset: ${response.status} ${response.statusText}`);
+      }
+
+      const blob = await response.blob();
+      if (abortReason && abortReason.error) {
+        throw abortReason.error;
+      }
+
+      return {
+        response,
+        blob
+      };
+    } catch (error) {
+      if (abortReason && abortReason.error) {
+        throw abortReason.error;
+      }
+
+      if (error && typeof error === "object" && error.name === "AbortError" && abortReason && abortReason.error) {
+        throw abortReason.error;
+      }
+
+      throw error;
+    } finally {
+      clearTimeout(timeoutId);
+      if (skipIntervalId !== null) {
+        clearInterval(skipIntervalId);
+      }
+    }
+  }
+
+  async function fetchGeneratedImageBlobWithRetry(target, options) {
+    const arrayRunController = options && options.arrayRunController;
+    const promptText =
+      options && options.promptText !== undefined && options.promptText !== null
+        ? String(options.promptText)
+        : "";
+    const promptIndex = options && Number.isFinite(options.promptIndex) ? options.promptIndex : null;
+    const downloadIndex = options && Number.isFinite(options.downloadIndex) ? options.downloadIndex : null;
+    const outputTarget = options && options.outputTarget;
+    const targetLabel = getGeneratedImageTargetLabel(downloadIndex);
+    const targetKey =
+      options && typeof options.targetKey === "string" && options.targetKey.length > 0
+        ? options.targetKey
+        : getDownloadTargetKey(target);
+    let resolvedTarget = target;
+    let retryCount = 0;
+    let attemptCount = 0;
+    let lastError = null;
+    let lastAssetUrl = getGeneratedImageAssetUrl(target);
+    let nextHeartbeatAt = Date.now() + DOWNLOAD_RETRY_HEARTBEAT_MS;
+    let skipDiagnosticSaved = false;
+
+    const saveSkipDiagnosticOnce = async (error) => {
+      if (skipDiagnosticSaved) {
+        return;
+      }
+      skipDiagnosticSaved = true;
+      await saveSkippedDownloadDiagnostic({
+        promptText,
+        promptIndex,
+        downloadIndex,
+        retryCount,
+        targetKey,
+        assetUrl: lastAssetUrl,
+        lastError: error || lastError,
+        outputTarget
+      });
+    };
+
+    while (true) {
+      try {
+        throwIfSkipCurrentPromptRequested(arrayRunController, ARRAY_RUN_PHASES.DOWNLOADING_IMAGES);
+        attemptCount += 1;
+        resolvedTarget = resolveGeneratedImageTargetForRetry(targetKey, resolvedTarget || target);
+        if (!resolvedTarget) {
+          throw new Error(
+            targetKey
+              ? `Generated image target is not currently available for key "${targetKey}".`
+              : "Generated image target is not currently available."
+          );
+        }
+
+        const assetUrl = getGeneratedImageAssetUrl(resolvedTarget);
+        if (!GENERATED_IMAGE_ASSET_URL_PATTERN.test(assetUrl)) {
+          throw new Error(`Generated image asset URL not found for ${targetLabel}.`);
+        }
+        lastAssetUrl = assetUrl;
+
+        const { response, blob } = await fetchGeneratedImageBlobAttempt(assetUrl, {
+          arrayRunController
+        });
+        return {
+          response,
+          blob,
+          assetUrl,
+          retryCount,
+          attemptCount,
+          targetKey
+        };
+      } catch (error) {
+        if (isSkipCurrentPromptError(error)) {
+          await saveSkipDiagnosticOnce(error);
+          throw error;
+        }
+
+        lastError = error;
+        retryCount += 1;
+        const delayMs = getDownloadRetryDelayMs(retryCount);
+        console.warn(
+          `[download-retry] ${targetLabel} fetch attempt ${attemptCount} failed: ${formatErrorForLog(error)}. ` +
+            `Retrying in ${formatDurationForLog(delayMs)}.`
+        );
+        if (Date.now() >= nextHeartbeatAt) {
+          console.log(
+            `[download-retry] Still retrying ${targetLabel} after ${retryCount} failed attempt${retryCount === 1 ? "" : "s"}. ` +
+              `Last asset URL: ${lastAssetUrl || "(missing)"}. Last error: ${formatErrorForLog(lastError)}.`
+          );
+          nextHeartbeatAt = Date.now() + DOWNLOAD_RETRY_HEARTBEAT_MS;
+        }
+
+        try {
+          await delayWithCheckpoint(delayMs, {
+            arrayRunController,
+            phase: ARRAY_RUN_PHASES.DOWNLOADING_IMAGES
+          });
+        } catch (delayError) {
+          if (isSkipCurrentPromptError(delayError)) {
+            await saveSkipDiagnosticOnce(lastError || delayError);
+          }
+          throw delayError;
+        }
+      }
+    }
   }
 
   function createOutputDirectoryError(message, cause) {
@@ -1656,6 +1941,11 @@
       options && options.outputTarget && typeof options.outputTarget.writeBlob === "function"
         ? options.outputTarget
         : createNativeOutputTarget();
+    const promptText =
+      options && options.promptText !== undefined && options.promptText !== null
+        ? String(options.promptText)
+        : "";
+    const promptIndex = options && Number.isFinite(options.promptIndex) ? options.promptIndex : null;
 
     console.log(`Found ${buttons.length} generated image(s). Downloading all.`);
     for (let index = 0; index < buttons.length; index++) {
@@ -1665,19 +1955,16 @@
       console.log(`Downloading generated image ${index + 1}`);
 
       const filenameBase = filenameBaseBuilder ? filenameBaseBuilder(index, button) : null;
-      const assetUrl = getGeneratedImageAssetUrl(button);
-      if (!GENERATED_IMAGE_ASSET_URL_PATTERN.test(assetUrl)) {
-        throw new Error(`Generated image asset URL not found for target ${index + 1}.`);
-      }
-
-      const response = await fetch(assetUrl, { credentials: "include" });
-      if (!response.ok) {
-        throw new Error(
-          `Failed to fetch generated image ${index + 1}: ${response.status} ${response.statusText}`
-        );
-      }
-
-      const blob = await response.blob();
+      const fetchResult = await fetchGeneratedImageBlobWithRetry(button, {
+        downloadIndex: index,
+        promptText,
+        promptIndex,
+        arrayRunController,
+        outputTarget
+      });
+      const assetUrl = fetchResult.assetUrl;
+      const response = fetchResult.response;
+      const blob = fetchResult.blob;
       const contentDisposition = response.headers.get("content-disposition");
       const originalFilename = extractFilenameFromContentDisposition(contentDisposition);
       const extension =
@@ -1705,6 +1992,13 @@
 
       const savedFilename = await outputTarget.writeBlob(blob, filename);
       console.log(formatSavedFileMessage(savedFilename, outputTarget));
+      if (fetchResult.retryCount > 0) {
+        console.log(
+          `[download-retry] ${getGeneratedImageTargetLabel(index)} completed after ${fetchResult.retryCount} retry attempt${
+            fetchResult.retryCount === 1 ? "" : "s"
+          }.`
+        );
+      }
 
       const clickedCount = index + 1;
       const shouldPause =
@@ -1758,7 +2052,9 @@
       const clickedCount = await clickDownloadButtons(newButtons, undefined, {
         filenameBaseBuilder,
         arrayRunController,
-        outputTarget
+        outputTarget,
+        promptText: originalPrompt,
+        promptIndex: progressCurrent
       });
       const retrySuffix =
         waitResult.retryCount > 0
