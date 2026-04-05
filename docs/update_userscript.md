@@ -8,12 +8,12 @@ Keep these APIs working:
 
 - `promptSet(msg)`
 - `sendMessage(msg, checkInterval, sleep, timeout)`
-- `sendMessageRepeatedly(msg, n, sleep, mode, output_dir, pick_output_dir)`
-- `sendMessageRepeatedlyArray(msgs, sleep, sep, prefix, postfix, from, to, mode, output_dir, pick_output_dir)`
-- `sendMessageRepeatedlyArrayChooseFile(sleep, sep, prefix, postfix, from, to, mode, output_dir, pick_output_dir)`
+- `sendMessageRepeatedly(msg, n, sleep, mode, pick_output_dir)`
+- `sendMessageRepeatedlyArray(msgs, sleep, sep, prefix, postfix, from, to, mode, pick_output_dir)`
+- `sendMessageRepeatedlyArrayChooseFile(sleep, sep, prefix, postfix, from, to, mode, pick_output_dir)`
 - `openNewChat()`
 - `skipCurrentPrompt()`
-- `clickDallEDownloadButtons(output_dir, pick_output_dir)`
+- `clickDallEDownloadButtons(pick_output_dir)`
 
 Required call style to preserve:
 
@@ -234,7 +234,7 @@ Use the tile/container plus `img[src*="/backend-api/estuary/content"]` as the pr
 The most stable discriminator currently observed is an `img` with alt text beginning with `Generated image:`.
 Operational note: in some chats, generated-image tiles are only mounted when scrolled into view, so scroll to the relevant part of the chat before running `clickDallEDownloadButtons()`.
 The downloader throttles bursts: after every 10 downloads it waits 1.1 seconds before continuing.
-When `pick_output_dir=true`, the script uses `showDirectoryPicker({ mode: "readwrite", startIn: "downloads", id: "chatgpt-userscript-output" })` once at the start, then creates/uses a sanitized `output_dir` subfolder under the chosen directory. If `pick_output_dir` is false/omitted, `output_dir` is ignored and native downloads are used.
+When `pick_output_dir=true`, the script uses `showDirectoryPicker({ mode: "readwrite", startIn: "downloads", id: "chatgpt-userscript-output" })` once at the start, and the picked folder is the exact final destination. If `pick_output_dir` is false/omitted, native downloads are used.
 If picked-folder mode breaks, inspect the File System Access API path (`showDirectoryPicker`, `getDirectoryHandle`, `getFileHandle`, `createWritable`) in addition to the image selectors.
 
 ## Image Limit Reset Detection

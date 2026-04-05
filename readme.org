@@ -13,12 +13,12 @@
 * Quick use (browser console)
 The script exposes helpers on =window=:
 - =sendMessage(msg, checkInterval, sleep, timeout)=
-- =sendMessageRepeatedly(msg, n, sleep, mode, output_dir, pick_output_dir)=
-- =sendMessageRepeatedlyArray(msgs, sleep, sep, prefix, postfix, from, to, mode, output_dir, pick_output_dir)=
-- =sendMessageRepeatedlyArrayChooseFile(sleep, sep, prefix, postfix, from, to, mode, output_dir, pick_output_dir)=
+- =sendMessageRepeatedly(msg, n, sleep, mode, pick_output_dir)=
+- =sendMessageRepeatedlyArray(msgs, sleep, sep, prefix, postfix, from, to, mode, pick_output_dir)=
+- =sendMessageRepeatedlyArrayChooseFile(sleep, sep, prefix, postfix, from, to, mode, pick_output_dir)=
 - =openNewChat()=
 - =skipCurrentPrompt()=
-- =clickDallEDownloadButtons(output_dir, pick_output_dir)=
+- =clickDallEDownloadButtons(pick_output_dir)=
 - =waitForImageGenerationLimitReset(previousAssistantTurnCount=0)=
 - =MAGIC_RETRY=
 
@@ -27,7 +27,7 @@ Examples:
 sendMessage("Hello");
 sendMessageRepeatedly("Thanks, continue.", n=2, sleep=60,);
 sendMessageRepeatedlyArrayChooseFile(sleep=10, sep="\n", prefix="", postfix="", from=0, to=0, mode="new_chat_image");
-sendMessageRepeatedlyArrayChooseFile(sleep=10, sep="\n", prefix="", postfix="", from=0, to=0, mode="new_chat_image", output_dir="Honey", pick_output_dir=true);
+sendMessageRepeatedlyArrayChooseFile(sleep=10, sep="\n", prefix="", postfix="", from=0, to=0, mode="new_chat_image", pick_output_dir=true);
 skipCurrentPrompt();
 clickDallEDownloadButtons();
 waitForImageGenerationLimitReset();
@@ -46,7 +46,7 @@ waitForImageGenerationLimitReset();
 - =to= defaults to =0=, and =to=0= maps to end-of-array (send all items from =from=).
 - =sendMessageRepeatedlyArrayChooseFile(...)= skips prompts that are only whitespace after splitting by =sep=, and applies =from= / =to= to that filtered prompt list.
 - In =new_chat_image= array mode, downloaded image filenames are normalized to array indices: =x.ext=, =x_1.ext=, =x_2.ext=, ...
-- Set =pick_output_dir=true= to activate picked-folder output. If =output_dir="Honey"=, saved files go into a sanitized =Honey= subfolder under the directory you pick; if =pick_output_dir= is omitted/false, =output_dir= is ignored and native browser downloads are used as before.
+- Set =pick_output_dir=true= to activate picked-folder output. You now pick the exact final folder; if =pick_output_dir= is omitted/false, native browser downloads are used as before.
 - Download helper targets visible generated-image tiles and fetches their current =/backend-api/estuary/content= asset URLs directly.
 - Picked-folder mode uses the File System Access API, so unsupported browsers or blocked/canceled directory picks fail early with a clear error.
 - Downloader throttling is built in: after every 10 image downloads, it waits 1.1 seconds before continuing.

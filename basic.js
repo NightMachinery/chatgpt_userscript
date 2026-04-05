@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         ChatGPT Message Helper
 // @namespace    https://chatgpt.com/
-// @version      1.1.15
+// @version      1.1.16
 // @description  Reliable message sending helpers for ChatGPT web UI changes.
 // @match        https://chatgpt.com/*
 // @grant        none
@@ -813,39 +813,6 @@
     return Boolean(value) && typeof value === "object" && !Array.isArray(value);
   }
 
-  function normalizeOutputDirectoryName(outputDir) {
-    if (outputDir === undefined || outputDir === null) {
-      return {
-        rawValue: "",
-        directoryName: "",
-        hadValue: false,
-        changed: false
-      };
-    }
-
-    const rawValue = String(outputDir).trim();
-    if (rawValue.length === 0) {
-      return {
-        rawValue,
-        directoryName: "",
-        hadValue: false,
-        changed: false
-      };
-    }
-
-    const directoryName = sanitizeFilenameBase(rawValue, "");
-    if (directoryName.length === 0 || directoryName === "." || directoryName === "..") {
-      throw new Error(`output_dir "${rawValue}" is invalid after sanitization.`);
-    }
-
-    return {
-      rawValue,
-      directoryName,
-      hadValue: true,
-      changed: directoryName !== rawValue
-    };
-  }
-
   function buildSafeFilename(filename, fallbackBase = "download") {
     const extension = extractExtensionCandidate(filename);
     const safeBase = sanitizeFilenameBase(removeExtensionCandidate(filename), fallbackBase);
@@ -976,14 +943,7 @@
     }
   }
 
-  async function createPickedOutputTarget(outputDir) {
-    const directorySpec = normalizeOutputDirectoryName(outputDir);
-    if (directorySpec.changed) {
-      console.warn(
-        `[output] Sanitized output_dir "${directorySpec.rawValue}" to "${directorySpec.directoryName}".`
-      );
-    }
-
+  async function createPickedOutputTarget() {
     let baseDirectoryHandle;
     try {
       baseDirectoryHandle = await showOutputDirectoryPicker();
@@ -1003,23 +963,8 @@
       );
     }
 
-    let directoryHandle = baseDirectoryHandle;
-    let description = "the selected folder";
-    if (directorySpec.hadValue) {
-      try {
-        directoryHandle = await baseDirectoryHandle.getDirectoryHandle(directorySpec.directoryName, {
-          create: true
-        });
-      } catch (error) {
-        throw createOutputDirectoryError(
-          `Failed to create or open output subfolder "${directorySpec.directoryName}": ${
-            error && error.message ? error.message : String(error)
-          }`,
-          error
-        );
-      }
-      description = `the selected folder/${directorySpec.directoryName}`;
-    }
+    const directoryHandle = baseDirectoryHandle;
+    const description = "the selected folder";
 
     console.log(`[output] Using ${description} for saved files.`);
 
@@ -1056,12 +1001,40 @@
     };
   }
 
-  async function resolveOutputTarget(outputDir, pickOutputDir) {
+  function warnIgnoredLegacyOutputDir(outputDir) {
+    if (outputDir === undefined || outputDir === null) {
+      return;
+    }
+
+    const trimmedValue = String(outputDir).trim();
+    if (trimmedValue.length === 0) {
+      return;
+    }
+
+    console.warn(
+      `[output] Ignoring deprecated output_dir="${trimmedValue}". pick_output_dir now uses the exact folder you choose.`
+    );
+  }
+
+  function normalizePickOutputDirectoryArgs(pickOutputDirOrLegacyOutputDir, legacyPickOutputDir) {
+    if (typeof pickOutputDirOrLegacyOutputDir === "boolean") {
+      return pickOutputDirOrLegacyOutputDir;
+    }
+
+    if (legacyPickOutputDir !== undefined) {
+      warnIgnoredLegacyOutputDir(pickOutputDirOrLegacyOutputDir);
+      return Boolean(legacyPickOutputDir);
+    }
+
+    return false;
+  }
+
+  async function resolveOutputTarget(pickOutputDir) {
     if (!pickOutputDir) {
       return createNativeOutputTarget();
     }
 
-    return createPickedOutputTarget(outputDir);
+    return createPickedOutputTarget();
   }
 
   async function downloadTextFile(content, filenamePrefix, outputTarget) {
@@ -1839,14 +1812,25 @@
     }
   }
 
-  async function sendMessageRepeatedly(msg, n, sleep, mode, output_dir, pick_output_dir) {
+  async function sendMessageRepeatedly(
+    msg,
+    n,
+    sleep,
+    mode,
+    pick_output_dir,
+    legacy_pick_output_dir
+  ) {
     const count = n ?? 10;
     const sleepSeconds = sleep ?? 30;
     const sleepDuration = sleepSeconds * 1000;
     const sendMode = normalizeSendMode(mode);
     const useNewChat = sendMode === SEND_MODES.NEW_CHAT_IMAGE;
+    const pickOutputDir = normalizePickOutputDirectoryArgs(
+      pick_output_dir,
+      legacy_pick_output_dir
+    );
     const outputTarget =
-      useNewChat && count > 0 ? await resolveOutputTarget(output_dir, pick_output_dir) : null;
+      useNewChat && count > 0 ? await resolveOutputTarget(pickOutputDir) : null;
 
     for (let i = 0; i < count; i++) {
       const previousButtons = useNewChat
@@ -1897,19 +1881,46 @@
   // options:
   // - continueOnImageDownloadTimeout: in new_chat_image mode only, save the failed prompt
   //   to a .txt file and continue to the next item after the final timeout instead of throwing.
-  function normalizeArrayOutputArguments(outputDirOrOptions, pickOutputDir, options) {
-    let outputDir = outputDirOrOptions;
-    let resolvedOptions = options;
+  function normalizeArrayOutputArguments(pickOutputDirOrOptions, maybeLegacyPickOutputDir, options) {
+    if (
+      isPlainObject(pickOutputDirOrOptions) &&
+      maybeLegacyPickOutputDir === undefined &&
+      options === undefined
+    ) {
+      return {
+        pickOutputDir: false,
+        options: pickOutputDirOrOptions
+      };
+    }
 
-    if (isPlainObject(outputDirOrOptions) && pickOutputDir === undefined && options === undefined) {
-      outputDir = undefined;
-      resolvedOptions = outputDirOrOptions;
+    if (typeof pickOutputDirOrOptions === "boolean") {
+      return {
+        pickOutputDir: pickOutputDirOrOptions,
+        options:
+          isPlainObject(maybeLegacyPickOutputDir) && options === undefined
+            ? maybeLegacyPickOutputDir
+            : isPlainObject(options)
+              ? options
+              : undefined
+      };
+    }
+
+    if (maybeLegacyPickOutputDir !== undefined && !isPlainObject(maybeLegacyPickOutputDir)) {
+      warnIgnoredLegacyOutputDir(pickOutputDirOrOptions);
+      return {
+        pickOutputDir: Boolean(maybeLegacyPickOutputDir),
+        options: isPlainObject(options) ? options : undefined
+      };
     }
 
     return {
-      outputDir,
-      pickOutputDir: Boolean(pickOutputDir),
-      options: isPlainObject(resolvedOptions) ? resolvedOptions : undefined
+      pickOutputDir: false,
+      options:
+        isPlainObject(maybeLegacyPickOutputDir) && options === undefined
+          ? maybeLegacyPickOutputDir
+          : isPlainObject(options)
+            ? options
+            : undefined
     };
   }
 
@@ -1922,8 +1933,8 @@
     from,
     to,
     mode,
-    outputDirOrOptions,
-    pickOutputDir,
+    pickOutputDirOrOptions,
+    maybeLegacyPickOutputDir,
     options
   ) {
     const sleepSeconds = sleep ?? 30;
@@ -1934,8 +1945,8 @@
     const sendMode = normalizeSendMode(mode);
     const useNewChat = sendMode === SEND_MODES.NEW_CHAT_IMAGE;
     const normalizedArgs = normalizeArrayOutputArguments(
-      outputDirOrOptions,
-      pickOutputDir,
+      pickOutputDirOrOptions,
+      maybeLegacyPickOutputDir,
       options
     );
     const continueOnImageDownloadTimeout = Boolean(
@@ -1971,7 +1982,7 @@
     }
     const outputTarget =
       useNewChat && selectedMessages.length > 0
-        ? await resolveOutputTarget(normalizedArgs.outputDir, normalizedArgs.pickOutputDir)
+        ? await resolveOutputTarget(normalizedArgs.pickOutputDir)
         : null;
 
     const arrayRunController = createArrayRunController({
@@ -2160,11 +2171,15 @@
     from,
     to,
     mode,
-    output_dir,
-    pick_output_dir
+    pick_output_dir,
+    legacy_pick_output_dir
   ) {
     const fileText = await chooseFileAsText();
     const sendMode = normalizeSendMode(mode);
+    const pickOutputDir = normalizePickOutputDirectoryArgs(
+      pick_output_dir,
+      legacy_pick_output_dir
+    );
     await sendMessageRepeatedlyArray(
       fileText,
       sleep,
@@ -2174,8 +2189,7 @@
       from,
       to,
       sendMode,
-      output_dir,
-      pick_output_dir,
+      pickOutputDir,
       {
         continueOnImageDownloadTimeout: sendMode === SEND_MODES.NEW_CHAT_IMAGE,
         skipWhitespaceOnlyMessages: true
@@ -2183,8 +2197,12 @@
     );
   }
 
-  async function clickDallEDownloadButtons(output_dir, pick_output_dir) {
-    const outputTarget = await resolveOutputTarget(output_dir, pick_output_dir);
+  async function clickDallEDownloadButtons(pick_output_dir, legacy_pick_output_dir) {
+    const pickOutputDir = normalizePickOutputDirectoryArgs(
+      pick_output_dir,
+      legacy_pick_output_dir
+    );
+    const outputTarget = await resolveOutputTarget(pickOutputDir);
     return clickDownloadButtons(getDownloadButtons(), undefined, {
       outputTarget
     });
@@ -2210,7 +2228,7 @@
   // Keep these globals so this call style works in console:
   // sendMessageRepeatedly("Thanks, continue.", n=2, sleep=60,)
   // sendMessageRepeatedlyArray("Prompt 1\nPrompt 2", sleep=10, sep="\n", prefix="", postfix="", from=0, to=0, mode="continuous")
-  // sendMessageRepeatedlyArrayChooseFile(sleep=10, sep="\n", prefix="", postfix="", from=0, to=0, mode="new_chat_image", output_dir="Honey", pick_output_dir=true)
+  // sendMessageRepeatedlyArrayChooseFile(sleep=10, sep="\n", prefix="", postfix="", from=0, to=0, mode="new_chat_image", pick_output_dir=true)
   // skipCurrentPrompt()
   if (!("n" in window)) {
     window.n = undefined;
@@ -2235,9 +2253,6 @@
   }
   if (!("mode" in window)) {
     window.mode = undefined;
-  }
-  if (!("output_dir" in window)) {
-    window.output_dir = undefined;
   }
   if (!("pick_output_dir" in window)) {
     window.pick_output_dir = undefined;
