@@ -146,8 +146,18 @@ If upstream changes this, update:
 - `isBusyGenerating()`
 - `getSendButton()`
 - `waitForButtonAvailable(...)`
+- `resolveVisibleDialog(...)`
+- `openNewChat(...)`
 
 Do not click random composer buttons by class only; many look similar (voice, dictate, submit).
+Also do not treat raw console noise as a failure by itself. Current benign-but-common examples include:
+
+- `Permissions-Policy ... browsing-topics`
+- `connectors/check 400`
+- Radix/ARIA warnings such as `DialogContent requires a DialogTitle`
+- router/accessibility noise such as `A router only supports one blocker at a time` or `aria-hidden ... retained focus`
+
+Those lines matter only insofar as they hint a visible dialog/blocker may need to be resolved in-page.
 
 When `mode === "new_chat_image"` in repeated send helpers, current flow is:
 
@@ -161,8 +171,13 @@ When `mode === "new_chat_image"` in repeated send helpers, current flow is:
 8. the default retry queue is `MAGIC_RETRY`, then the creative-license guidance prompt, then `"Generate!"`
 9. fetch the generated image asset URL(s) directly from the visible image tile(s) and trigger downloads
 10. if download acquisition fails after the image is already visible, keep retrying that same image forever with backoff and a 45-second per-attempt timeout; do not regenerate a fresh image just because download fetches are flaky
-11. trigger new chat shortcut (`fireShortcut("o", "KeyO", { shift: true })`)
-12. wait briefly, then continue
+11. if the retry queue is exhausted without a visible image, continue with `MAGIC_RETRY` indefinitely for that prompt
+12. `openNewChat()` is now a recovery loop, not a one-shot shortcut:
+    - resolve visible dialogs with a conservative allowlist
+    - click a visible `New chat` control when available
+    - fall back to `fireShortcut("o", "KeyO", { shift: true })`
+    - only return once a fresh-chat-ready surface is visible
+13. if composer/send readiness gets stuck, recover in-page forever (unless `skipCurrentPrompt()` is used) instead of throwing a fatal timeout
 
 If this breaks, inspect the generated-image tile selector, the asset URL extraction, and the shortcut dispatch behavior.
 
@@ -190,6 +205,7 @@ Current behavior:
 - if the run is in an inter-prompt delay, the delay is shortened and the next prompt starts immediately
 - in `new_chat_image` mode, if the skipped prompt was already sent, the runner opens a fresh new chat before continuing
 - if the skip happens during repeated generated-image download retries, the script first saves a diagnostic text file containing the prompt, prompt index, image index, target key, last asset URL, last error, and retry count
+- if the UI gets wedged during new-chat/send recovery, use `skipCurrentPrompt()` as the manual escape hatch; the script now prefers infinite recovery loops over failing the batch
 
 ## Smoke Test Snippet
 
@@ -221,6 +237,8 @@ If actual is `0` or `1`, check:
 - composer write method drift
 - busy detection drift
 - message send blocked by generation state
+- visible route-blocker/dialog handling drift
+- new-chat readiness heuristics drift
 
 ## Generated Image Downloads
 

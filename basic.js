@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         ChatGPT Message Helper
 // @namespace    https://chatgpt.com/
-// @version      1.1.18
+// @version      1.1.19
 // @description  Reliable message sending helpers for ChatGPT web UI changes.
 // @match        https://chatgpt.com/*
 // @grant        none
@@ -84,6 +84,27 @@
     OPENING_NEW_CHAT_FOR_RETRY: "opening_new_chat_for_retry",
     IDLE: "idle"
   });
+  const UI_RECOVERY_HEARTBEAT_MS = 60 * 1000;
+  const UI_RECOVERY_POLL_MS = 250;
+  const UI_RECOVERY_ACTION_SETTLE_MS = 1200;
+  const NEW_CHAT_RECOVERY_TIMEOUT_MS = 15000;
+  const SAFE_DIALOG_CONFIRM_LABEL_PATTERNS = Object.freeze([
+    /^leave$/i,
+    /^discard$/i,
+    /^discard changes$/i,
+    /^leave without saving$/i,
+    /^continue without saving$/i,
+    /^start new chat$/i
+  ]);
+  const SAFE_DIALOG_DISMISS_LABEL_PATTERNS = Object.freeze([
+    /^cancel$/i,
+    /^close$/i,
+    /^dismiss$/i,
+    /^not now$/i,
+    /^stay$/i,
+    /^keep editing$/i,
+    /^go back$/i
+  ]);
   let activeDownloadRenameSession = null;
   let downloadRenameInterceptorInstalled = false;
   let activeArrayRunController = null;
@@ -257,12 +278,602 @@
     return { advancedEarly: false };
   }
 
-  async function openNewChat(options) {
-    fireShortcut("o", "KeyO", { shift: true });
-    await delayWithCheckpoint(1200, {
-      arrayRunController: options && options.arrayRunController,
-      phase: options && options.phase
+  function collectElementsBySelectors(selectors, options) {
+    const root =
+      options && options.root && typeof options.root.querySelectorAll === "function"
+        ? options.root
+        : document;
+    const includeHidden = Boolean(options && options.includeHidden);
+    const candidates = [];
+    const seen = new Set();
+    for (const selector of selectors) {
+      for (const element of root.querySelectorAll(selector)) {
+        if (seen.has(element) || (!includeHidden && !isElementVisible(element))) {
+          continue;
+        }
+        seen.add(element);
+        candidates.push(element);
+      }
+    }
+    return candidates;
+  }
+
+  function getCurrentPathname() {
+    try {
+      return new URL(window.location.href).pathname;
+    } catch (_) {
+      return String(window.location.pathname || "");
+    }
+  }
+
+  function getElementActionLabel(element) {
+    if (!(element instanceof Element)) {
+      return "";
+    }
+
+    if (element instanceof HTMLInputElement) {
+      const inputLabel = normalizeWhitespace(
+        element.getAttribute("aria-label") || element.title || element.value || ""
+      );
+      if (inputLabel.length > 0) {
+        return inputLabel;
+      }
+    }
+
+    return normalizeWhitespace(
+      element.getAttribute("aria-label") ||
+        element.getAttribute("title") ||
+        element.textContent ||
+        ""
+    );
+  }
+
+  function getElementTextForDiagnostic(element) {
+    if (!(element instanceof Element)) {
+      return "";
+    }
+    return normalizeWhitespace(element.textContent || "");
+  }
+
+  function getVisibleDialogElements() {
+    return collectElementsBySelectors(
+      [
+        '[role="dialog"]',
+        '[role="alertdialog"]',
+        '[aria-modal="true"]'
+      ],
+      {
+        includeHidden: false
+      }
+    );
+  }
+
+  function getDialogActionElements(dialog) {
+    if (!(dialog instanceof Element)) {
+      return [];
+    }
+    return collectElementsBySelectors(
+      [
+        "button",
+        '[role="button"]',
+        "a[href]",
+        'input[type="button"]',
+        'input[type="submit"]'
+      ],
+      {
+        root: dialog,
+        includeHidden: false
+      }
+    );
+  }
+
+  function findActionElementByLabel(elements, labelPatterns) {
+    const patterns = Array.isArray(labelPatterns) ? labelPatterns : [];
+    return elements.find((element) => {
+      if (isElementDisabled(element)) {
+        return false;
+      }
+      const label = getElementActionLabel(element);
+      return label.length > 0 && patterns.some((pattern) => pattern.test(label));
+    }) || null;
+  }
+
+  function getVisibleDialogSummaries() {
+    return getVisibleDialogElements().map((dialog) => ({
+      text: summarizePromptForLog(getElementTextForDiagnostic(dialog), 160),
+      buttons: getDialogActionElements(dialog).map((element) => getElementActionLabel(element)).filter(Boolean)
+    }));
+  }
+
+  async function resolveVisibleDialog(options) {
+    const preferConfirmNavigation = Boolean(options && options.preferConfirmNavigation);
+    const arrayRunController = options && options.arrayRunController;
+    const phase = options && options.phase;
+    const dialogs = getVisibleDialogElements();
+    for (const dialog of dialogs) {
+      const actions = getDialogActionElements(dialog);
+      const prioritizedTargets = preferConfirmNavigation
+        ? [
+            {
+              type: "confirm_navigation",
+              target: findActionElementByLabel(actions, SAFE_DIALOG_CONFIRM_LABEL_PATTERNS)
+            },
+            {
+              type: "dismiss",
+              target: findActionElementByLabel(actions, SAFE_DIALOG_DISMISS_LABEL_PATTERNS)
+            }
+          ]
+        : [
+            {
+              type: "dismiss",
+              target: findActionElementByLabel(actions, SAFE_DIALOG_DISMISS_LABEL_PATTERNS)
+            }
+          ];
+
+      for (const candidate of prioritizedTargets) {
+        if (!(candidate.target instanceof Element)) {
+          continue;
+        }
+        const label = getElementActionLabel(candidate.target);
+        console.warn(`[ui-recovery] Clicking dialog action "${label}" (${candidate.type}).`);
+        candidate.target.click();
+        await delayWithCheckpoint(UI_RECOVERY_ACTION_SETTLE_MS, {
+          arrayRunController,
+          phase
+        });
+        return {
+          handled: true,
+          actionType: candidate.type,
+          label,
+          dialogText: summarizePromptForLog(getElementTextForDiagnostic(dialog), 160)
+        };
+      }
+    }
+
+    return {
+      handled: false,
+      dialogCount: dialogs.length
+    };
+  }
+
+  function getConversationTurnElements() {
+    return collectElementsBySelectors(
+      [
+        '#thread [data-testid^="conversation-turn-"]',
+        '#thread [data-turn-id][data-turn]',
+        '[data-testid^="conversation-turn-"]',
+        '[data-turn-id][data-turn]'
+      ],
+      {
+        includeHidden: true
+      }
+    );
+  }
+
+  function getUserTurnElements() {
+    return collectElementsBySelectors(
+      [
+        '[data-message-author-role="user"]',
+        '[data-turn="user"]'
+      ],
+      {
+        includeHidden: true
+      }
+    );
+  }
+
+  function getAssistantTurnElements() {
+    return collectElementsBySelectors(
+      [
+        '[data-message-author-role="assistant"]',
+        '[data-turn="assistant"]'
+      ],
+      {
+        includeHidden: true
+      }
+    );
+  }
+
+  function getPromptElement() {
+    const selectors = [
+      '#prompt-textarea[contenteditable="true"]',
+      '[data-type="unified-composer"] [contenteditable="true"][role="textbox"]',
+      'div#prompt-textarea',
+      'textarea#prompt-textarea',
+      'textarea[name="prompt-textarea"]'
+    ];
+
+    const candidates = collectElementsBySelectors(selectors, {
+      includeHidden: true
     });
+
+    return candidates.find((element) => isElementVisible(element)) || candidates[0] || null;
+  }
+
+  function getPromptText(prompt) {
+    const target = prompt || getPromptElement();
+    if (!target) {
+      return "";
+    }
+
+    if (target instanceof HTMLTextAreaElement || target instanceof HTMLInputElement) {
+      return String(target.value || "");
+    }
+
+    return String(target.textContent || "");
+  }
+
+  function getComposerContainer(prompt) {
+    const target = prompt || getPromptElement();
+    if (!(target instanceof Element)) {
+      return null;
+    }
+
+    return (
+      target.closest('[data-type="unified-composer"]') ||
+      target.closest(".composer-parent") ||
+      target.closest("form") ||
+      target.parentElement
+    );
+  }
+
+  function isPromptBlank(prompt) {
+    return normalizeWhitespace(getPromptText(prompt)).length === 0;
+  }
+
+  function getStopButton() {
+    const stopButtons = collectElementsBySelectors(
+      [
+        'button[data-testid="stop-button"]',
+        'button[aria-label*="Stop" i]'
+      ],
+      {
+        includeHidden: false
+      }
+    );
+    return stopButtons[0] || null;
+  }
+
+  function getSendButton() {
+    const prompt = getPromptElement();
+    const composerContainer = getComposerContainer(prompt);
+    const selectors = [
+      'button[data-testid="send-button"]',
+      'button[aria-label="Send prompt"]',
+      'button[aria-label="Send"]',
+      'button[aria-label*="Send" i]'
+    ];
+
+    const searchRoots = [composerContainer, document].filter(
+      (root, index, roots) => root && roots.indexOf(root) === index
+    );
+    for (const root of searchRoots) {
+      const candidates = collectElementsBySelectors(selectors, {
+        root,
+        includeHidden: false
+      });
+      if (candidates.length > 0) {
+        return candidates[0];
+      }
+    }
+
+    return (
+      collectElementsBySelectors(["button"], {
+        includeHidden: false
+      }).find((button) => /^send$/i.test(getElementActionLabel(button))) || null
+    );
+  }
+
+  function findNewChatControl() {
+    const dedicatedCandidates = collectElementsBySelectors(
+      [
+        'button[aria-label*="new chat" i]',
+        'a[aria-label*="new chat" i]',
+        'button[data-testid*="new-chat" i]',
+        'a[data-testid*="new-chat" i]'
+      ],
+      {
+        includeHidden: false
+      }
+    );
+    const dedicatedMatch = dedicatedCandidates.find((element) => /\bnew chat\b/i.test(getElementActionLabel(element)));
+    if (dedicatedMatch) {
+      return dedicatedMatch;
+    }
+
+    return (
+      collectElementsBySelectors(
+        [
+          "button",
+          "a[href]",
+          '[role="button"]'
+        ],
+        {
+          includeHidden: false
+        }
+      ).find((element) => /\bnew chat\b/i.test(getElementActionLabel(element))) || null
+    );
+  }
+
+  function captureChatSurfaceState() {
+    const prompt = getPromptElement();
+    return {
+      url: String(window.location.href || ""),
+      path: getCurrentPathname(),
+      conversationTurnCount: getConversationTurnElements().length,
+      assistantTurnCount: getAssistantTurnElements().length,
+      userTurnCount: getUserTurnElements().length,
+      promptVisible: Boolean(prompt && isElementVisible(prompt)),
+      promptBlank: isPromptBlank(prompt),
+      promptText: getPromptText(prompt)
+    };
+  }
+
+  function isFreshChatReady(previousState) {
+    const currentState = captureChatSurfaceState();
+    if (!currentState.promptVisible || !currentState.promptBlank || isBusyGenerating()) {
+      return false;
+    }
+    if (getVisibleDialogElements().length > 0) {
+      return false;
+    }
+
+    if (currentState.conversationTurnCount === 0) {
+      return true;
+    }
+
+    if (
+      previousState &&
+      currentState.path !== previousState.path &&
+      currentState.promptBlank
+    ) {
+      return true;
+    }
+
+    return currentState.path === "/" && currentState.promptBlank;
+  }
+
+  function buildUiRecoveryState(options) {
+    const prompt = getPromptElement();
+    const sendButton = getSendButton();
+    const stopButton = getStopButton();
+    const promptText = getPromptText(prompt);
+    return {
+      operation: options && options.operation ? options.operation : "",
+      phase: options && options.phase ? options.phase : "",
+      promptIndex:
+        options && Number.isFinite(options.promptIndex) ? options.promptIndex : null,
+      cycleCount:
+        options && Number.isFinite(options.cycleCount) ? options.cycleCount : 0,
+      url: String(window.location.href || ""),
+      path: getCurrentPathname(),
+      busyGenerating: Boolean(stopButton),
+      stopButtonLabel: stopButton ? getElementActionLabel(stopButton) : "",
+      promptFound: Boolean(prompt),
+      promptTag: prompt ? prompt.tagName : "",
+      promptVisible: Boolean(prompt && isElementVisible(prompt)),
+      promptBlank: isPromptBlank(prompt),
+      promptLength: promptText.length,
+      promptPreview: summarizePromptForLog(promptText, 160),
+      sendButtonFound: Boolean(sendButton),
+      sendButtonVisible: Boolean(sendButton && isElementVisible(sendButton)),
+      sendButtonDisabled: Boolean(sendButton && isElementDisabled(sendButton)),
+      sendButtonLabel: sendButton ? getElementActionLabel(sendButton) : "",
+      assistantTurnCount: getAssistantTurnElements().length,
+      userTurnCount: getUserTurnElements().length,
+      conversationTurnCount: getConversationTurnElements().length,
+      visibleDialogs: getVisibleDialogSummaries()
+    };
+  }
+
+  function buildUiRecoveryDiagnosticContent(details) {
+    const state = details && details.state ? details.state : {};
+    const visibleDialogs = Array.isArray(state.visibleDialogs) ? state.visibleDialogs : [];
+    const lines = [
+      `timestamp: ${new Date().toISOString()}`,
+      `operation: ${state.operation || ""}`,
+      `phase: ${state.phase || ""}`,
+      `prompt_index: ${state.promptIndex !== null && state.promptIndex !== undefined ? state.promptIndex : ""}`,
+      `cycle_count: ${state.cycleCount || 0}`,
+      `url: ${state.url || ""}`,
+      `path: ${state.path || ""}`,
+      `busy_generating: ${state.busyGenerating ? "true" : "false"}`,
+      `stop_button_label: ${state.stopButtonLabel || ""}`,
+      `prompt_found: ${state.promptFound ? "true" : "false"}`,
+      `prompt_tag: ${state.promptTag || ""}`,
+      `prompt_visible: ${state.promptVisible ? "true" : "false"}`,
+      `prompt_blank: ${state.promptBlank ? "true" : "false"}`,
+      `prompt_length: ${state.promptLength || 0}`,
+      `prompt_preview: ${state.promptPreview || ""}`,
+      `send_button_found: ${state.sendButtonFound ? "true" : "false"}`,
+      `send_button_visible: ${state.sendButtonVisible ? "true" : "false"}`,
+      `send_button_disabled: ${state.sendButtonDisabled ? "true" : "false"}`,
+      `send_button_label: ${state.sendButtonLabel || ""}`,
+      `assistant_turn_count: ${state.assistantTurnCount || 0}`,
+      `user_turn_count: ${state.userTurnCount || 0}`,
+      `conversation_turn_count: ${state.conversationTurnCount || 0}`,
+      "visible_dialogs:"
+    ];
+
+    if (visibleDialogs.length === 0) {
+      lines.push("(none)");
+    } else {
+      for (const dialog of visibleDialogs) {
+        lines.push(`- text: ${dialog && dialog.text ? dialog.text : ""}`);
+        lines.push(
+          `  buttons: ${dialog && Array.isArray(dialog.buttons) && dialog.buttons.length > 0 ? dialog.buttons.join(" | ") : ""}`
+        );
+      }
+    }
+
+    if (details && details.promptText) {
+      lines.push("");
+      lines.push("prompt:");
+      lines.push(details.promptText);
+    }
+
+    return lines.join("\n");
+  }
+
+  async function saveUiRecoveryDiagnostic(details) {
+    try {
+      const filename = await downloadTextFile(
+        buildUiRecoveryDiagnosticContent(details),
+        `ui_recovery_${details && details.operation ? details.operation : "unknown"}_${
+          details && details.promptIndex !== null && details.promptIndex !== undefined ? details.promptIndex : "unknown"
+        }`,
+        details && details.outputTarget
+      );
+      console.warn(
+        `[ui-recovery] Saved UI recovery diagnostic to "${filename}" in ${describeOutputTarget(details && details.outputTarget)}.`
+      );
+      return filename;
+    } catch (error) {
+      console.warn(
+        `[ui-recovery] Failed to save UI recovery diagnostic: ${formatErrorForLog(error)}`,
+        error
+      );
+      return null;
+    }
+  }
+
+  async function recoverCurrentChatSendability(setMsgFn, options) {
+    const arrayRunController = options && options.arrayRunController;
+    const phase = options && options.phase ? options.phase : ARRAY_RUN_PHASES.WAITING_SEND_READY;
+    const dialogResult = await resolveVisibleDialog({
+      arrayRunController,
+      phase,
+      preferConfirmNavigation: false
+    });
+    if (dialogResult.handled) {
+      return true;
+    }
+
+    if (isBusyGenerating()) {
+      return false;
+    }
+
+    const activeElement = document.activeElement;
+    if (
+      activeElement instanceof HTMLElement &&
+      activeElement !== document.body &&
+      activeElement !== document.documentElement
+    ) {
+      try {
+        activeElement.blur();
+      } catch (_) {}
+    }
+
+    await delayWithCheckpoint(Math.max(UI_RECOVERY_POLL_MS, 100), {
+      arrayRunController,
+      phase
+    });
+
+    try {
+      await setMsgFn();
+      return true;
+    } catch (error) {
+      console.warn(`[ui-recovery] Failed to reapply prompt text: ${formatErrorForLog(error)}`);
+      return false;
+    }
+  }
+
+  async function openNewChat(options) {
+    const arrayRunController = options && options.arrayRunController;
+    const phase = options && options.phase;
+    const outputTarget = options && options.outputTarget;
+    const promptText =
+      options && options.promptText !== undefined && options.promptText !== null
+        ? String(options.promptText)
+        : "";
+    const promptIndex =
+      options && Number.isFinite(options.promptIndex) ? options.promptIndex : null;
+    const previousState = captureChatSurfaceState();
+    if (isFreshChatReady(previousState)) {
+      return;
+    }
+
+    let recoveryCount = 0;
+    let nextHeartbeatAt = Date.now() + UI_RECOVERY_HEARTBEAT_MS;
+    let diagnosticSaved = false;
+
+    while (true) {
+      const cycleStartedAt = Date.now();
+      while (Date.now() - cycleStartedAt < NEW_CHAT_RECOVERY_TIMEOUT_MS) {
+        throwIfSkipCurrentPromptRequested(arrayRunController, phase || ARRAY_RUN_PHASES.OPENING_NEW_CHAT_FOR_RETRY);
+        if (isFreshChatReady(previousState)) {
+          return;
+        }
+
+        const dialogResult = await resolveVisibleDialog({
+          arrayRunController,
+          phase,
+          preferConfirmNavigation: true
+        });
+        if (dialogResult.handled) {
+          if (isFreshChatReady(previousState)) {
+            return;
+          }
+          continue;
+        }
+
+        const newChatControl = findNewChatControl();
+        if (newChatControl) {
+          console.log(`[new-chat] Clicking visible control "${getElementActionLabel(newChatControl)}".`);
+          newChatControl.click();
+          await delayWithCheckpoint(UI_RECOVERY_ACTION_SETTLE_MS, {
+            arrayRunController,
+            phase
+          });
+          if (isFreshChatReady(previousState)) {
+            return;
+          }
+        }
+
+        fireShortcut("o", "KeyO", { shift: true });
+        await delayWithCheckpoint(UI_RECOVERY_ACTION_SETTLE_MS, {
+          arrayRunController,
+          phase
+        });
+        if (isFreshChatReady(previousState)) {
+          return;
+        }
+
+        if (Date.now() >= nextHeartbeatAt) {
+          console.log("[new-chat] Still waiting for a fresh chat surface to become ready.");
+          nextHeartbeatAt = Date.now() + UI_RECOVERY_HEARTBEAT_MS;
+        }
+
+        await delayWithCheckpoint(UI_RECOVERY_POLL_MS, {
+          arrayRunController,
+          phase
+        });
+      }
+
+      recoveryCount += 1;
+      const recoveryState = buildUiRecoveryState({
+        operation: "open_new_chat",
+        phase,
+        promptIndex,
+        cycleCount: recoveryCount
+      });
+      console.warn(
+        `[new-chat] Fresh chat was not ready after ${formatDurationForLog(NEW_CHAT_RECOVERY_TIMEOUT_MS)}. ` +
+          `Continuing recovery cycle ${recoveryCount}.`,
+        recoveryState
+      );
+      if (!diagnosticSaved) {
+        diagnosticSaved = Boolean(
+          await saveUiRecoveryDiagnostic({
+            operation: "open_new_chat",
+            promptIndex,
+            promptText,
+            outputTarget,
+            state: recoveryState
+          })
+        );
+      }
+    }
   }
 
   function requestSkipCurrentPrompt() {
@@ -358,30 +969,6 @@
     return rect.width > 0 && rect.height > 0;
   }
 
-  function getPromptElement() {
-    const selectors = [
-      '#prompt-textarea[contenteditable="true"]',
-      '[data-type="unified-composer"] [contenteditable="true"][role="textbox"]',
-      'div#prompt-textarea',
-      'textarea#prompt-textarea',
-      'textarea[name="prompt-textarea"]'
-    ];
-
-    const candidates = [];
-    const seen = new Set();
-    for (const selector of selectors) {
-      for (const element of document.querySelectorAll(selector)) {
-        if (seen.has(element)) {
-          continue;
-        }
-        seen.add(element);
-        candidates.push(element);
-      }
-    }
-
-    return candidates.find((element) => isElementVisible(element)) || candidates[0] || null;
-  }
-
   function setContentEditableText(element, msg) {
     const text = String(msg);
     element.focus();
@@ -431,12 +1018,6 @@
 
     setContentEditableText(prompt, msg);
     return true;
-  }
-
-  function getSendButton() {
-    return document.querySelector(
-      'button[data-testid="send-button"], button[aria-label="Send prompt"], button[aria-label="Send"]'
-    );
   }
 
   function normalizeWhitespace(value) {
@@ -504,10 +1085,6 @@
       return 60 * 1000;
     }
     return null;
-  }
-
-  function getAssistantTurnElements() {
-    return Array.from(document.querySelectorAll('[data-message-author-role="assistant"]'));
   }
 
   function getImageGenerationLimitResetState(previousAssistantTurnCount = 0) {
@@ -1670,7 +2247,7 @@
   }
 
   function isBusyGenerating() {
-    return Boolean(document.querySelector('button[data-testid="stop-button"]'));
+    return Boolean(getStopButton());
   }
 
   async function clickRegenerate(options) {
@@ -1694,7 +2271,7 @@
 
   async function clickSendButton() {
     const sendButton = getSendButton();
-    if (sendButton && !sendButton.disabled) {
+    if (sendButton && !isElementDisabled(sendButton)) {
       sendButton.click();
       return;
     }
@@ -1710,42 +2287,109 @@
     options
   ) {
     const arrayRunController = options && options.arrayRunController;
-    while (Date.now() - startTime < timeoutMs) {
-      setArrayRunPhase(arrayRunController, ARRAY_RUN_PHASES.WAITING_SEND_READY);
-      throwIfSkipCurrentPromptRequested(arrayRunController, ARRAY_RUN_PHASES.WAITING_SEND_READY);
+    const phase =
+      options && options.phase ? options.phase : ARRAY_RUN_PHASES.WAITING_SEND_READY;
+    const outputTarget = options && options.outputTarget;
+    const promptText =
+      options && options.promptText !== undefined && options.promptText !== null
+        ? String(options.promptText)
+        : "";
+    const promptIndex =
+      options && Number.isFinite(options.promptIndex) ? options.promptIndex : null;
+    const operation =
+      options && options.operationLabel ? String(options.operationLabel) : "send_message";
+    const recoveryTimeoutMs = Math.min(timeoutMs, NEW_CHAT_RECOVERY_TIMEOUT_MS);
+    let recoveryCount = 0;
+    let cycleStartedAt = Date.now();
+    let nextHeartbeatAt = Date.now() + UI_RECOVERY_HEARTBEAT_MS;
+    let diagnosticSaved = false;
+
+    while (true) {
+      setArrayRunPhase(arrayRunController, phase);
+      throwIfSkipCurrentPromptRequested(arrayRunController, phase);
+
       if (!isBusyGenerating()) {
-        await setMsgFn();
-        throwIfSkipCurrentPromptRequested(arrayRunController, ARRAY_RUN_PHASES.WAITING_SEND_READY);
-
-        const sendButton = getSendButton();
-        if (sendButton && !sendButton.disabled) {
-          const waited = Date.now() - startTime;
-          if (waited < sleepMs) {
-            await delayWithCheckpoint(sleepMs - waited, {
-              arrayRunController,
-              phase: ARRAY_RUN_PHASES.WAITING_SEND_READY
-            });
-          }
-
+        const dialogResult = await resolveVisibleDialog({
+          arrayRunController,
+          phase,
+          preferConfirmNavigation: false
+        });
+        if (!dialogResult.handled) {
           await setMsgFn();
-          throwIfSkipCurrentPromptRequested(arrayRunController, ARRAY_RUN_PHASES.WAITING_SEND_READY);
-          await clickSendButton();
-          return;
+          throwIfSkipCurrentPromptRequested(arrayRunController, phase);
+
+          const sendButton = getSendButton();
+          if (sendButton && !isElementDisabled(sendButton)) {
+            const waited = Date.now() - startTime;
+            if (waited < sleepMs) {
+              await delayWithCheckpoint(sleepMs - waited, {
+                arrayRunController,
+                phase
+              });
+            }
+
+            await setMsgFn();
+            throwIfSkipCurrentPromptRequested(arrayRunController, phase);
+            await clickSendButton();
+            return;
+          }
         }
       } else {
         await clickRegenerate({
           arrayRunController,
-          phase: ARRAY_RUN_PHASES.WAITING_SEND_READY
+          phase
         });
+      }
+
+      if (Date.now() >= nextHeartbeatAt) {
+        console.log(
+          `[ui-recovery] Still waiting for send readiness (${operation}).`,
+          buildUiRecoveryState({
+            operation,
+            phase,
+            promptIndex,
+            cycleCount: recoveryCount
+          })
+        );
+        nextHeartbeatAt = Date.now() + UI_RECOVERY_HEARTBEAT_MS;
+      }
+
+      if (Date.now() - cycleStartedAt >= recoveryTimeoutMs) {
+        recoveryCount += 1;
+        const recoveryState = buildUiRecoveryState({
+          operation,
+          phase,
+          promptIndex,
+          cycleCount: recoveryCount
+        });
+        console.warn(
+          `[ui-recovery] ${operation} timed out waiting for send readiness after ${formatDurationForLog(recoveryTimeoutMs)}. ` +
+            `Continuing recovery cycle ${recoveryCount}.`,
+          recoveryState
+        );
+        if (!diagnosticSaved) {
+          diagnosticSaved = Boolean(
+            await saveUiRecoveryDiagnostic({
+              operation,
+              promptIndex,
+              promptText,
+              outputTarget,
+              state: recoveryState
+            })
+          );
+        }
+        await recoverCurrentChatSendability(setMsgFn, {
+          arrayRunController,
+          phase
+        });
+        cycleStartedAt = Date.now();
       }
 
       await delayWithCheckpoint(checkInterval, {
         arrayRunController,
-        phase: ARRAY_RUN_PHASES.WAITING_SEND_READY
+        phase
       });
     }
-
-    throw new Error("Operation timed out.");
   }
 
   async function sendMessage(msg, checkInterval, sleep, timeout, options) {
@@ -1790,10 +2434,15 @@
     }
 
     const arrayRunController = options && options.arrayRunController;
+    const outputTarget = options && options.outputTarget;
+    const promptIndex = options && Number.isFinite(options.promptIndex) ? options.promptIndex : null;
     console.warn("[image-retry] MAGIC_RETRY: opening a new chat and resending the original prompt.");
     await openNewChat({
       arrayRunController,
-      phase: ARRAY_RUN_PHASES.OPENING_NEW_CHAT_FOR_RETRY
+      phase: ARRAY_RUN_PHASES.OPENING_NEW_CHAT_FOR_RETRY,
+      outputTarget,
+      promptText: normalizedPrompt,
+      promptIndex
     });
     const assistantTurnCount = getAssistantTurnElements().length;
     const previousButtons = captureDownloadTargetKeys();
@@ -1803,7 +2452,11 @@
       undefined,
       IMAGE_DOWNLOAD_TIMEOUT_SECONDS,
       {
-        arrayRunController
+        arrayRunController,
+        outputTarget,
+        promptText: normalizedPrompt,
+        promptIndex,
+        operationLabel: "magic_retry_send"
       }
     );
 
@@ -1853,6 +2506,7 @@
   async function waitForDownloadButtonVisibleWithRetry(previousButtons, retryPrompts, options) {
     const retryPromptQueue = normalizeRetryPrompts(retryPrompts);
     let retryCount = 0;
+    let retryQueueExhausted = false;
     const waitOptions =
       options && typeof options === "object"
         ? options
@@ -1864,10 +2518,14 @@
         ? String(waitOptions.originalPrompt)
         : "";
     const arrayRunController = waitOptions.arrayRunController;
+    const outputTarget = waitOptions.outputTarget;
+    const promptIndex = Number.isFinite(waitOptions.promptIndex) ? waitOptions.promptIndex : null;
     const sharedWaitOptions = waitOptions;
     sharedWaitOptions.onLimitRecovered = async () =>
       runMagicRetry(originalPrompt, {
-        arrayRunController
+        arrayRunController,
+        outputTarget,
+        promptIndex
       });
 
     while (true) {
@@ -1881,24 +2539,32 @@
           throw error;
         }
 
+        let retryStep;
         if (retryCount >= retryPromptQueue.length) {
-          if (retryCount > 0) {
+          if (!retryQueueExhausted) {
+            retryQueueExhausted = true;
             console.error(
-              `Timed out waiting for a generated image after ${retryCount} retry step${retryCount === 1 ? "" : "s"}.`
+              `Timed out waiting for a generated image after ${retryCount} retry step${retryCount === 1 ? "" : "s"}. ` +
+                "Retry queue exhausted; continuing with MAGIC_RETRY indefinitely for this prompt."
             );
           }
-          throw error;
+          retryStep = MAGIC_RETRY_PROMPT;
+        } else {
+          retryStep = retryPromptQueue[retryCount];
         }
 
-        const retryStep = retryPromptQueue[retryCount];
         const nextRetryNumber = retryCount + 1;
         if (isMagicRetryPrompt(retryStep)) {
           console.warn(
-            `Timed out waiting for a generated image. Running retry step ${nextRetryNumber}/${retryPromptQueue.length}: MAGIC_RETRY.`
+            `Timed out waiting for a generated image. Running retry step ${nextRetryNumber}/${
+              retryQueueExhausted ? "∞" : retryPromptQueue.length
+            }: MAGIC_RETRY.`
           );
           setArrayRunPhase(arrayRunController, ARRAY_RUN_PHASES.RETRYING_PROMPT);
           const retryResult = await runMagicRetry(originalPrompt, {
-            arrayRunController
+            arrayRunController,
+            outputTarget,
+            promptIndex
           });
           previousButtons = retryResult.previousButtons;
           waitOptions.assistantTurnCount = retryResult.assistantTurnCount;
@@ -1913,7 +2579,11 @@
             undefined,
             IMAGE_DOWNLOAD_TIMEOUT_SECONDS,
             {
-              arrayRunController
+              arrayRunController,
+              outputTarget,
+              promptText: retryStep,
+              promptIndex,
+              operationLabel: "retry_prompt_send"
             }
           );
           waitOptions.assistantTurnCount = getAssistantTurnElements().length;
@@ -2047,7 +2717,9 @@
       const waitResult = await waitForDownloadButtonVisibleWithRetry(previousButtons, undefined, {
         assistantTurnCount,
         originalPrompt,
-        arrayRunController
+        arrayRunController,
+        outputTarget,
+        promptIndex: progressCurrent
       });
       const newButtons = waitResult.buttons;
       const clickedCount = await clickDownloadButtons(newButtons, undefined, {
@@ -2071,7 +2743,13 @@
 
       if (index < total - 1) {
         setArrayRunPhase(arrayRunController, ARRAY_RUN_PHASES.OPENING_NEW_CHAT_AFTER_SUCCESS);
-        await openNewChat();
+        await openNewChat({
+          arrayRunController,
+          phase: ARRAY_RUN_PHASES.OPENING_NEW_CHAT_AFTER_SUCCESS,
+          outputTarget,
+          promptText: originalPrompt,
+          promptIndex: progressCurrent
+        });
         await waitForNextPromptTransition(
           sleepDuration > 0 ? sleepDuration : 1200,
           arrayRunController
@@ -2105,7 +2783,11 @@
 
     if (useNewChat && currentPromptSent && hasNextPrompt) {
       setArrayRunPhase(controller, ARRAY_RUN_PHASES.OPENING_NEW_CHAT_AFTER_SKIP);
-      await openNewChat();
+      await openNewChat({
+        arrayRunController: controller,
+        phase: ARRAY_RUN_PHASES.OPENING_NEW_CHAT_AFTER_SKIP,
+        promptIndex: currentAbsoluteIndex
+      });
     }
   }
 
@@ -2131,7 +2813,11 @@
 
     if (useNewChat && count > 0) {
       console.log("[new_chat_image] Opening a fresh chat before starting the run.");
-      await openNewChat();
+      await openNewChat({
+        outputTarget,
+        promptText: msg,
+        promptIndex: 1
+      });
     }
 
     for (let i = 0; i < count; i++) {
@@ -2139,7 +2825,12 @@
         ? new Set(getDownloadButtons().map((button) => getDownloadTargetKey(button)).filter(Boolean))
         : undefined;
       const previousAssistantTurnCount = useNewChat ? getAssistantTurnElements().length : 0;
-      await sendMessage(msg);
+      await sendMessage(msg, undefined, undefined, undefined, {
+        outputTarget,
+        promptText: msg,
+        promptIndex: i + 1,
+        operationLabel: "initial_send"
+      });
       console.log(`Message sent (${i + 1}/${count}).`);
       await handlePostSend(i, count, sleepDuration, sleepSeconds, useNewChat, previousButtons, {
         assistantTurnCount: previousAssistantTurnCount,
@@ -2181,8 +2872,8 @@
   }
 
   // options:
-  // - continueOnImageDownloadTimeout: in new_chat_image mode only, save the failed prompt
-  //   to a .txt file and continue to the next item after the final timeout instead of throwing.
+  // - continueOnImageDownloadTimeout: legacy escape hatch; if an image timeout still bubbles out
+  //   of the recovery loop, save the failed prompt to a .txt file and continue.
   function normalizeArrayOutputArguments(pickOutputDirOrOptions, maybeLegacyPickOutputDir, options) {
     if (
       isPlainObject(pickOutputDirOrOptions) &&
@@ -2299,7 +2990,10 @@
         console.log("[new_chat_image] Opening a fresh chat before starting the array run.");
         await openNewChat({
           arrayRunController,
-          phase: ARRAY_RUN_PHASES.OPENING_NEW_CHAT_BEFORE_START
+          phase: ARRAY_RUN_PHASES.OPENING_NEW_CHAT_BEFORE_START,
+          outputTarget,
+          promptText: selectedMessages[0],
+          promptIndex: fromIndex
         });
       }
 
@@ -2314,7 +3008,11 @@
 
         try {
           await sendMessage(fullPrompt, undefined, undefined, undefined, {
-            arrayRunController
+            arrayRunController,
+            outputTarget,
+            promptText: fullPrompt,
+            promptIndex: absoluteIndex,
+            operationLabel: "initial_send"
           });
           markArrayRunCurrentPromptSent(arrayRunController);
           console.log(`Message sent (${absoluteIndex}/${lastIndex}).`);
@@ -2365,7 +3063,13 @@
 
           if (hasNextPrompt) {
             setArrayRunPhase(arrayRunController, ARRAY_RUN_PHASES.OPENING_NEW_CHAT_AFTER_SKIP);
-            await openNewChat();
+            await openNewChat({
+              arrayRunController,
+              phase: ARRAY_RUN_PHASES.OPENING_NEW_CHAT_AFTER_SKIP,
+              outputTarget,
+              promptText: fullPrompt,
+              promptIndex: absoluteIndex
+            });
             await waitForNextPromptTransition(
               sleepDuration > 0 ? sleepDuration : 1200,
               arrayRunController

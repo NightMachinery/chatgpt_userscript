@@ -37,12 +37,14 @@ waitForImageGenerationLimitReset();
 - =sleep= in =sendMessageRepeatedly= is in seconds.
 - =timeout= in =sendMessage= is in seconds.
 - =mode= defaults to =continuous=.
-- =mode="new_chat_image"= always opens a fresh chat before the first prompt, then waits for a visible generated image; on each timeout it runs the next retry step (by default: =MAGIC_RETRY=, then the creative-license guidance, then =Generate!=), waits again, then downloads and opens a new chat on success.
+- =mode="new_chat_image"= always opens a fresh chat before the first prompt, then waits for a visible generated image; on each timeout it runs the next retry step (by default: =MAGIC_RETRY=, then the creative-license guidance, then =Generate!=). If the retry queue is exhausted, it continues with =MAGIC_RETRY= indefinitely for that prompt instead of failing the batch.
 - Once a generated image is visible, the downloader retries that same image forever with backoff (=1s → 2s → 4s ... capped at 60s=) and a per-attempt fetch timeout of 45 seconds; it re-resolves the current tile/asset URL on every retry instead of regenerating a new image.
 - =skipCurrentPrompt()= works during active array runs only (=sendMessageRepeatedlyArray(...)= / =sendMessageRepeatedlyArrayChooseFile(...)=). It cooperatively skips the current prompt at the next safe checkpoint and advances to the next selected prompt.
 - If =skipCurrentPrompt()= is used while a generated image is stuck in download-retry, the script saves a small diagnostic text file (prompt, prompt index, image index, asset URL, last error, retry count) before advancing.
 - =MAGIC_RETRY= means: open a new chat and resend the original image prompt.
 - In =new_chat_image= mode, if ChatGPT replies with an image-limit reset message like =You can create more images when the limit resets in ...=, the script treats that as a special case, waits through the reset window, then retries by opening a new chat and resending the original prompt instead of consuming the fallback retry queue.
+- =openNewChat()= no longer just fires the shortcut and returns. It now waits until a fresh-chat surface is actually ready, resolving visible dialogs with a conservative allowlist (=Leave= / =Discard= / =Stay= / =Cancel= / =Close= etc.), trying a visible =New chat= control when present, and falling back to the shortcut.
+- If the composer/send button gets stuck during retries, the script now enters an in-page recovery loop instead of throwing a fatal =Operation timed out.= It keeps re-finding the composer, dismissing safe dialogs, and logging heartbeat diagnostics until the prompt becomes sendable or you call =skipCurrentPrompt()=.
 - In array helpers, progress and failure logs use absolute array indices (0-based), so ranges show as =from..to-1=.
 - =to= is an exclusive end index in array helpers.
 - =to= defaults to =0=, and =to=0= maps to end-of-array (send all items from =from=).
@@ -51,6 +53,7 @@ waitForImageGenerationLimitReset();
 - Set =pick_output_dir=true= to activate picked-folder output. You now pick the exact final folder; if =pick_output_dir= is omitted/false, native browser downloads are used as before.
 - Download helper targets visible generated-image tiles and fetches their current =/backend-api/estuary/content= asset URLs directly.
 - Benign upstream console noise is expected sometimes (for example =Permissions-Policy ... browsing-topics=, =connectors/check 400=, =sentinel/ping 400=, or ChatGPT's own =net::ERR_HTTP2_PING_FAILED= lines). The userscript does not treat those as failures by themselves.
+- Additional upstream console warnings such as ChatGPT accessibility/router noise (=aria-hidden retained focus=, =DialogContent requires a DialogTitle=, =A router only supports one blocker at a time=) are also treated as symptoms to recover around, not as direct failure signals.
 - Picked-folder mode uses the File System Access API, so unsupported browsers or blocked/canceled directory picks fail early with a clear error.
 - Downloader throttling is built in: after every 10 image downloads, it waits 1.1 seconds before continuing.
 - =clickDallEDownloadButtons()= may require manually scrolling to the top of the chat so the target generated images are mounted/visible.
