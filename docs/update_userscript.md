@@ -171,7 +171,7 @@ When `mode === "new_chat_image"` in repeated send helpers, current flow is:
 8. the default retry queue is `MAGIC_RETRY`, then the creative-license guidance prompt, then `"Generate!"`
 9. fetch the generated image asset URL(s) directly from the visible image tile(s) and trigger downloads
 10. if download acquisition fails after the image is already visible, keep retrying that same image forever with backoff and a 45-second per-attempt timeout; do not regenerate a fresh image just because download fetches are flaky
-11. if the retry queue is exhausted without a visible image, continue with `MAGIC_RETRY` indefinitely for that prompt
+11. if the retry queue is exhausted without a visible image, let the image timeout bubble out; only UI/page-level failures should loop indefinitely
 12. `openNewChat()` is now a recovery loop, not a one-shot shortcut:
     - resolve visible dialogs with a conservative allowlist
     - click a visible `New chat` control when available

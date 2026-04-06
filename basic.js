@@ -2506,7 +2506,6 @@
   async function waitForDownloadButtonVisibleWithRetry(previousButtons, retryPrompts, options) {
     const retryPromptQueue = normalizeRetryPrompts(retryPrompts);
     let retryCount = 0;
-    let retryQueueExhausted = false;
     const waitOptions =
       options && typeof options === "object"
         ? options
@@ -2539,26 +2538,20 @@
           throw error;
         }
 
-        let retryStep;
         if (retryCount >= retryPromptQueue.length) {
-          if (!retryQueueExhausted) {
-            retryQueueExhausted = true;
+          if (retryCount > 0) {
             console.error(
-              `Timed out waiting for a generated image after ${retryCount} retry step${retryCount === 1 ? "" : "s"}. ` +
-                "Retry queue exhausted; continuing with MAGIC_RETRY indefinitely for this prompt."
+              `Timed out waiting for a generated image after ${retryCount} retry step${retryCount === 1 ? "" : "s"}.`
             );
           }
-          retryStep = MAGIC_RETRY_PROMPT;
-        } else {
-          retryStep = retryPromptQueue[retryCount];
+          throw error;
         }
 
+        const retryStep = retryPromptQueue[retryCount];
         const nextRetryNumber = retryCount + 1;
         if (isMagicRetryPrompt(retryStep)) {
           console.warn(
-            `Timed out waiting for a generated image. Running retry step ${nextRetryNumber}/${
-              retryQueueExhausted ? "∞" : retryPromptQueue.length
-            }: MAGIC_RETRY.`
+            `Timed out waiting for a generated image. Running retry step ${nextRetryNumber}/${retryPromptQueue.length}: MAGIC_RETRY.`
           );
           setArrayRunPhase(arrayRunController, ARRAY_RUN_PHASES.RETRYING_PROMPT);
           const retryResult = await runMagicRetry(originalPrompt, {
