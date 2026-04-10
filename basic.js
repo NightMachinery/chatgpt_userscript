@@ -1,14 +1,14 @@
 // ==UserScript==
 // @name         ChatGPT Message Helper
 // @namespace    https://chatgpt.com/
-// @version      1.1.31
+// @version      1.1.32
 // @description  Reliable message sending helpers for ChatGPT web UI changes.
 // @match        https://chatgpt.com/*
 // @grant        none
 // ==/UserScript==
 
 (function () {
-  const USERSCRIPT_VERSION = "1.1.31";
+  const USERSCRIPT_VERSION = "1.1.32";
   const IMAGE_DOWNLOAD_TIMEOUT_SECONDS = 400;
   const IMAGE_DOWNLOAD_TIMEOUT_ERROR_MESSAGE = "Timed out waiting for a new visible generated image.";
   const ENABLE_IMAGE_REFUSAL_FAST_RETRY = true;
@@ -2955,6 +2955,14 @@
           const retryStep = retryPromptQueue[retryCount];
           const retryPrompt = retryStep.prompt;
           const nextRetryNumber = retryCount + 1;
+          console.log("[image-retry] Preparing retry step.", {
+            retryStepNumber: nextRetryNumber,
+            retryStepCount: retryPromptQueue.length,
+            imageExpected: retryStep.image_expected_p,
+            isMagicRetry: isMagicRetryPrompt(retryPrompt),
+            promptIndex,
+            assistantTurnCount: waitOptions.assistantTurnCount
+          });
           if (isMagicRetryPrompt(retryPrompt)) {
             console.warn(
               `${
@@ -3009,11 +3017,23 @@
             });
             waitOptions.assistantTurnCount = getAssistantTurnElements().length;
             retryCount = nextRetryNumber;
+            console.log("[image-retry] Non-image retry step completed; composer is ready. Advancing to next retry step.", {
+              completedRetryStepNumber: nextRetryNumber,
+              retryStepCount: retryPromptQueue.length,
+              promptIndex,
+              assistantTurnCount: waitOptions.assistantTurnCount
+            });
             continue;
           }
 
           waitOptions.assistantTurnCount = getAssistantTurnElements().length;
           retryCount = nextRetryNumber;
+          console.log("[image-retry] Retry step sent; returning to image wait loop.", {
+            completedRetryStepNumber: nextRetryNumber,
+            retryStepCount: retryPromptQueue.length,
+            promptIndex,
+            assistantTurnCount: waitOptions.assistantTurnCount
+          });
           break;
         }
       }
