@@ -2797,10 +2797,14 @@
         : "";
     const arrayRunController = options && options.arrayRunController;
     const outputTarget = options && options.outputTarget;
+    const imageRetryPrompts =
+      options && (options.imageRetryPrompts ?? options.retryPrompts) !== undefined
+        ? options.imageRetryPrompts ?? options.retryPrompts
+        : undefined;
 
     if (useNewChat) {
       console.log("Waiting for generated image...");
-      const waitResult = await waitForDownloadButtonVisibleWithRetry(previousButtons, undefined, {
+      const waitResult = await waitForDownloadButtonVisibleWithRetry(previousButtons, imageRetryPrompts, {
         assistantTurnCount,
         originalPrompt,
         arrayRunController,
@@ -2960,6 +2964,8 @@
   // options:
   // - continueOnImageDownloadTimeout: legacy escape hatch; if an image timeout still bubbles out
   //   of the recovery loop, save the failed prompt to a .txt file and continue.
+  // - imageRetryPrompts / retryPrompts: override the default image retry queue used by
+  //   waitForDownloadButtonVisibleWithRetry in new_chat_image mode.
   function normalizeArrayOutputArguments(pickOutputDirOrOptions, maybeLegacyPickOutputDir, options) {
     if (
       isPlainObject(pickOutputDirOrOptions) &&
@@ -3031,6 +3037,10 @@
     const continueOnImageDownloadTimeout = Boolean(
       useNewChat && normalizedArgs.options && normalizedArgs.options.continueOnImageDownloadTimeout
     );
+    const imageRetryPrompts =
+      useNewChat && normalizedArgs.options
+        ? normalizedArgs.options.imageRetryPrompts ?? normalizedArgs.options.retryPrompts
+        : undefined;
 
     const { messages, skippedCount } = normalizeMessageBatch(msgs, separator, normalizedArgs.options);
     if (skippedCount > 0) {
@@ -3120,7 +3130,8 @@
               filenameBaseBuilder: useNewChat
                 ? (downloadIndex) =>
                     downloadIndex === 0 ? `${absoluteIndex}` : `${absoluteIndex}_${downloadIndex}`
-                : undefined
+                : undefined,
+              imageRetryPrompts
             }
           );
         } catch (error) {
@@ -3264,6 +3275,18 @@
     });
   }
 
+  function normalizeChooseFileOutputArguments(
+    pickOutputDirOrOptions,
+    maybeLegacyPickOutputDir,
+    options
+  ) {
+    return normalizeArrayOutputArguments(
+      pickOutputDirOrOptions,
+      maybeLegacyPickOutputDir,
+      options
+    );
+  }
+
   async function sendMessageRepeatedlyArrayChooseFile(
     sleep,
     sep,
@@ -3273,13 +3296,15 @@
     to,
     mode,
     pick_output_dir,
-    legacy_pick_output_dir
+    legacy_pick_output_dir,
+    options
   ) {
     const fileText = await chooseFileAsText();
     const sendMode = normalizeSendMode(mode);
-    const pickOutputDir = normalizePickOutputDirectoryArgs(
+    const normalizedArgs = normalizeChooseFileOutputArguments(
       pick_output_dir,
-      legacy_pick_output_dir
+      legacy_pick_output_dir,
+      options
     );
     await sendMessageRepeatedlyArray(
       fileText,
@@ -3290,8 +3315,9 @@
       from,
       to,
       sendMode,
-      pickOutputDir,
+      normalizedArgs.pickOutputDir,
       {
+        ...normalizedArgs.options,
         continueOnImageDownloadTimeout: sendMode === SEND_MODES.NEW_CHAT_IMAGE,
         skipWhitespaceOnlyMessages: true
       }

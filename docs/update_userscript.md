@@ -11,6 +11,7 @@ Keep these APIs working:
 - `sendMessageRepeatedly(msg, n, sleep, mode, pick_output_dir)`
 - `sendMessageRepeatedlyArray(msgs, sleep, sep, prefix, postfix, from, to, mode, pick_output_dir)`
 - `sendMessageRepeatedlyArrayChooseFile(sleep, sep, prefix, postfix, from, to, mode, pick_output_dir)`
+  - Also accepts an options object in the final slot (or instead of `pick_output_dir`) for behaviors like `imageRetryPrompts`.
 - `openNewChat()`
 - `skipCurrentPrompt()`
 - `clickDallEDownloadButtons(pick_output_dir)`
@@ -194,6 +195,7 @@ For `sendMessageRepeatedlyArray(...)` and `sendMessageRepeatedlyArrayChooseFile(
 - `to` is exclusive.
 - `to=0` maps to end-of-array (full range from `from` to the end).
 - `sendMessageRepeatedlyArrayChooseFile(...)` skips entries that are only whitespace after splitting by `sep`; `from`/`to` are applied after that filtering.
+- In `new_chat_image` mode, both array helpers accept `options.imageRetryPrompts` (alias: `options.retryPrompts`) to override the default retry queue passed into `waitForDownloadButtonVisibleWithRetry(...)`.
 
 ## Console Skip Command
 

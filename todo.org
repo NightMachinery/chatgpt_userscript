@@ -1,4 +1,6 @@
 #+TITLE: chatgpt_userscript/todo
 
+* DONE allow setting custom =DEFAULT_IMAGE_RETRY_PROMPTS= in =sendMessageRepeatedlyArrayChooseFile= (dep injection)
+
 * DONE CREATIVE_LICENSE_RETRY_PROMPT should become an array of prompts to be sent (no  image -> send next prompt), and it should end with "Generate!".
 
