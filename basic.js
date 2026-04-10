@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         ChatGPT Message Helper
 // @namespace    https://chatgpt.com/
-// @version      1.1.26
+// @version      1.1.27
 // @description  Reliable message sending helpers for ChatGPT web UI changes.
 // @match        https://chatgpt.com/*
 // @grant        none
@@ -20,7 +20,7 @@
   const IMAGE_LIMIT_RESET_TEXT_PATTERN = /\blimit resets in\b/i;
   const IMAGE_LIMIT_IMAGE_PATTERN = /\bimages?\b|\bimage generations?\b/i;
   const IMAGE_REFUSAL_TEXT_PATTERNS = Object.freeze([
-    /\bi can[’']?t help\b/i,
+    /\bi (can[’’']?t|cannot|can not) help\b/i,
     /\bwe[’']?re (so )?sorry/i,
     /\bmay violate our guardrails\b/i,
     /\bretry (or edit )?your prompt\b/i
@@ -1169,24 +1169,74 @@
     return IMAGE_REFUSAL_TEXT_PATTERNS.some((pattern) => pattern.test(normalizedText));
   }
 
+  function getLatestAssistantMessageState(previousAssistantTurnCount = 0) {
+    const assistantTurns = getAssistantTurnElements();
+    const startIndex = Math.max(0, Math.trunc(Number(previousAssistantTurnCount) || 0));
+    if (assistantTurns.length <= startIndex) {
+      return {
+        assistantTurnCount: assistantTurns.length,
+        latestAssistantTurnIndex: null,
+        latestAssistantText: "",
+        latestAssistantTextMatchedImageRefusalPatterns: false,
+        noAssistantMessageDetected: true
+      };
+    }
+
+    const turnIndex = assistantTurns.length - 1;
+    if (turnIndex < startIndex) {
+      return {
+        assistantTurnCount: assistantTurns.length,
+        latestAssistantTurnIndex: null,
+        latestAssistantText: "",
+        latestAssistantTextMatchedImageRefusalPatterns: false,
+        noAssistantMessageDetected: true
+      };
+    }
+
+    const turn = assistantTurns[turnIndex];
+    const text = normalizeWhitespace(turn.textContent || "");
+    return {
+      turn,
+      assistantTurnCount: assistantTurns.length,
+      latestAssistantTurnIndex: turnIndex,
+      latestAssistantText: text,
+      latestAssistantTextMatchedImageRefusalPatterns: text.length > 0 && matchesImageRefusalText(text),
+      noAssistantMessageDetected: text.length === 0
+    };
+  }
+
+  function logReadinessAssistantDebug(kind, options) {
+    const details = options && typeof options === "object" ? options : {};
+    const latestAssistant = getLatestAssistantMessageState(details.previousAssistantTurnCount);
+    console.log(`[ready-debug] ${kind}`, {
+      readinessKind: kind,
+      operation: details.operation ? String(details.operation) : "",
+      phase: details.phase ? String(details.phase) : "",
+      promptIndex: Number.isFinite(details.promptIndex) ? details.promptIndex : null,
+      url: String(window.location.href || ""),
+      path: getCurrentPathname(),
+      assistantTurnCount: latestAssistant.assistantTurnCount,
+      latestAssistantTurnIndex: latestAssistant.latestAssistantTurnIndex,
+      latestAssistantText: latestAssistant.latestAssistantText,
+      latestAssistantTextMatchedImageRefusalPatterns:
+        latestAssistant.latestAssistantTextMatchedImageRefusalPatterns,
+      noAssistantMessageDetected: latestAssistant.noAssistantMessageDetected
+    });
+  }
+
   function getLatestImageRefusalState(previousAssistantTurnCount = 0) {
     if (!ENABLE_IMAGE_REFUSAL_FAST_RETRY || !isComposerReadyForInput()) {
       return null;
     }
 
-    const assistantTurns = getAssistantTurnElements();
-    const startIndex = Math.max(0, Math.trunc(Number(previousAssistantTurnCount) || 0));
-    if (assistantTurns.length <= startIndex) {
+    const latestAssistant = getLatestAssistantMessageState(previousAssistantTurnCount);
+    if (!latestAssistant.turn) {
       return null;
     }
 
-    const turnIndex = assistantTurns.length - 1;
-    if (turnIndex < startIndex) {
-      return null;
-    }
-
-    const turn = assistantTurns[turnIndex];
-    const text = normalizeWhitespace(turn.textContent || "");
+    const turn = latestAssistant.turn;
+    const turnIndex = latestAssistant.latestAssistantTurnIndex;
+    const text = latestAssistant.latestAssistantText;
     if (text.length === 0 || extractImageLimitWaitMs(text) !== null || !matchesImageRefusalText(text)) {
       return null;
     }
@@ -2391,6 +2441,10 @@
       options && Number.isFinite(options.promptIndex) ? options.promptIndex : null;
     const operation =
       options && options.operationLabel ? String(options.operationLabel) : "send_message";
+    const previousAssistantTurnCount =
+      options && Number.isFinite(options.previousAssistantTurnCount)
+        ? options.previousAssistantTurnCount
+        : 0;
     const recoveryTimeoutMs = Math.min(timeoutMs, NEW_CHAT_RECOVERY_TIMEOUT_MS);
     let recoveryCount = 0;
     let cycleStartedAt = Date.now();
@@ -2423,6 +2477,12 @@
 
             await setMsgFn();
             throwIfSkipCurrentPromptRequested(arrayRunController, phase);
+            logReadinessAssistantDebug("send_ready", {
+              operation,
+              phase,
+              promptIndex,
+              previousAssistantTurnCount
+            });
             await clickSendButton();
             return;
           }
@@ -2505,6 +2565,10 @@
       options && Number.isFinite(options.promptIndex) ? options.promptIndex : null;
     const operation =
       options && options.operationLabel ? String(options.operationLabel) : "wait_send_ready";
+    const previousAssistantTurnCount =
+      options && Number.isFinite(options.previousAssistantTurnCount)
+        ? options.previousAssistantTurnCount
+        : 0;
     const recoveryTimeoutMs = Math.min(timeoutMs, NEW_CHAT_RECOVERY_TIMEOUT_MS);
     const startTime = Date.now();
     let recoveryCount = 0;
@@ -2525,6 +2589,12 @@
         if (!dialogResult.handled) {
           const sendButton = getSendButton();
           if (sendButton && !isElementDisabled(sendButton)) {
+            logReadinessAssistantDebug("send_ready", {
+              operation,
+              phase,
+              promptIndex,
+              previousAssistantTurnCount
+            });
             return;
           }
         }
@@ -2605,6 +2675,10 @@
       options && Number.isFinite(options.promptIndex) ? options.promptIndex : null;
     const operation =
       options && options.operationLabel ? String(options.operationLabel) : "wait_composer_ready";
+    const previousAssistantTurnCount =
+      options && Number.isFinite(options.previousAssistantTurnCount)
+        ? options.previousAssistantTurnCount
+        : 0;
     const recoveryTimeoutMs = Math.min(timeoutMs, NEW_CHAT_RECOVERY_TIMEOUT_MS);
     const startTime = Date.now();
     let recoveryCount = 0;
@@ -2622,6 +2696,12 @@
         preferConfirmNavigation: false
       });
       if (!dialogResult.handled && isComposerReadyForInput()) {
+        logReadinessAssistantDebug("composer_ready", {
+          operation,
+          phase,
+          promptIndex,
+          previousAssistantTurnCount
+        });
         return;
       }
 
@@ -2771,7 +2851,8 @@
         outputTarget,
         promptText: normalizedPrompt,
         promptIndex,
-        operationLabel: "magic_retry_send"
+        operationLabel: "magic_retry_send",
+        previousAssistantTurnCount: assistantTurnCount
       }
     );
 
@@ -2907,7 +2988,8 @@
               outputTarget,
               promptText: retryPrompt,
               promptIndex,
-              operationLabel: "retry_prompt_send"
+              operationLabel: "retry_prompt_send",
+              previousAssistantTurnCount: waitOptions.assistantTurnCount
             }
           );
           if (!retryStep.image_expected_p) {
@@ -2917,7 +2999,8 @@
               promptText: retryPrompt,
               promptIndex,
               phase: ARRAY_RUN_PHASES.RETRYING_PROMPT,
-              operationLabel: "retry_prompt_response"
+              operationLabel: "retry_prompt_response",
+              previousAssistantTurnCount: waitOptions.assistantTurnCount
             });
             waitOptions.assistantTurnCount = getAssistantTurnElements().length;
             retryCount = nextRetryNumber;
@@ -3181,7 +3264,8 @@
         outputTarget,
         promptText: msg,
         promptIndex: i + 1,
-        operationLabel: "initial_send"
+        operationLabel: "initial_send",
+        previousAssistantTurnCount: previousAssistantTurnCount
       });
       console.log(`Message sent (${i + 1}/${count}).`);
       await handlePostSend(i, count, sleepDuration, sleepSeconds, useNewChat, previousButtons, {
@@ -3371,7 +3455,8 @@
             outputTarget,
             promptText: fullPrompt,
             promptIndex: absoluteIndex,
-            operationLabel: "initial_send"
+            operationLabel: "initial_send",
+            previousAssistantTurnCount: previousAssistantTurnCount
           });
           markArrayRunCurrentPromptSent(arrayRunController);
           console.log(`Message sent (${absoluteIndex}/${lastIndex}).`);
