@@ -1,14 +1,14 @@
 // ==UserScript==
 // @name         ChatGPT Message Helper
 // @namespace    https://chatgpt.com/
-// @version      1.1.29
+// @version      1.1.31
 // @description  Reliable message sending helpers for ChatGPT web UI changes.
 // @match        https://chatgpt.com/*
 // @grant        none
 // ==/UserScript==
 
 (function () {
-  const USERSCRIPT_VERSION = "1.1.29";
+  const USERSCRIPT_VERSION = "1.1.31";
   const IMAGE_DOWNLOAD_TIMEOUT_SECONDS = 400;
   const IMAGE_DOWNLOAD_TIMEOUT_ERROR_MESSAGE = "Timed out waiting for a new visible generated image.";
   const ENABLE_IMAGE_REFUSAL_FAST_RETRY = true;
@@ -2938,39 +2938,43 @@
           throw error;
         }
 
-        if (retryCount >= retryPromptQueue.length) {
-          if (retryCount > 0) {
-            console.error(
+        while (true) {
+          if (retryCount >= retryPromptQueue.length) {
+            if (retryCount > 0) {
+              console.error(
+                `${
+                  refusalDetected
+                    ? "Detected an image refusal"
+                    : "Timed out waiting for a generated image"
+                } after ${retryCount} retry step${retryCount === 1 ? "" : "s"}.`
+              );
+            }
+            throw refusalDetected ? createImageDownloadTimeoutError() : error;
+          }
+
+          const retryStep = retryPromptQueue[retryCount];
+          const retryPrompt = retryStep.prompt;
+          const nextRetryNumber = retryCount + 1;
+          if (isMagicRetryPrompt(retryPrompt)) {
+            console.warn(
               `${
                 refusalDetected
-                  ? "Detected an image refusal"
-                  : "Timed out waiting for a generated image"
-              } after ${retryCount} retry step${retryCount === 1 ? "" : "s"}.`
+                  ? "Detected an image refusal."
+                  : "Timed out waiting for a generated image."
+              } Running retry step ${nextRetryNumber}/${retryPromptQueue.length}: MAGIC_RETRY.`
             );
+            setArrayRunPhase(arrayRunController, ARRAY_RUN_PHASES.RETRYING_PROMPT);
+            const retryResult = await runMagicRetry(originalPrompt, {
+              arrayRunController,
+              outputTarget,
+              promptIndex
+            });
+            previousButtons = retryResult.previousButtons;
+            waitOptions.assistantTurnCount = retryResult.assistantTurnCount;
+            retryCount = nextRetryNumber;
+            break;
           }
-          throw refusalDetected ? createImageDownloadTimeoutError() : error;
-        }
 
-        const retryStep = retryPromptQueue[retryCount];
-        const retryPrompt = retryStep.prompt;
-        const nextRetryNumber = retryCount + 1;
-        if (isMagicRetryPrompt(retryPrompt)) {
-          console.warn(
-            `${
-              refusalDetected
-                ? "Detected an image refusal."
-                : "Timed out waiting for a generated image."
-            } Running retry step ${nextRetryNumber}/${retryPromptQueue.length}: MAGIC_RETRY.`
-          );
-          setArrayRunPhase(arrayRunController, ARRAY_RUN_PHASES.RETRYING_PROMPT);
-          const retryResult = await runMagicRetry(originalPrompt, {
-            arrayRunController,
-            outputTarget,
-            promptIndex
-          });
-          previousButtons = retryResult.previousButtons;
-          waitOptions.assistantTurnCount = retryResult.assistantTurnCount;
-        } else {
           console.warn(
             `${
               refusalDetected
@@ -3005,22 +3009,13 @@
             });
             waitOptions.assistantTurnCount = getAssistantTurnElements().length;
             retryCount = nextRetryNumber;
-            if (retryCount >= retryPromptQueue.length) {
-              console.error(
-                `${
-                  refusalDetected
-                    ? "Detected an image refusal"
-                    : "Timed out waiting for a generated image"
-                } after ${retryCount} retry step${retryCount === 1 ? "" : "s"}.`
-              );
-              throw refusalDetected ? createImageDownloadTimeoutError() : error;
-            }
             continue;
           }
 
           waitOptions.assistantTurnCount = getAssistantTurnElements().length;
+          retryCount = nextRetryNumber;
+          break;
         }
-        retryCount = nextRetryNumber;
       }
     }
   }
