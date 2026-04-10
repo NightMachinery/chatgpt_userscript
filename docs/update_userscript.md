@@ -165,21 +165,23 @@ When `mode === "new_chat_image"` in repeated send helpers, current flow is:
 2. send prompt
 3. wait until a visible generated image appears for the newest response
 4. if ChatGPT instead replies with an image-limit reset message (`...limit resets in ...`), parse the duration, log the wait, wait through the reset window, then retry by opening a new chat and resending the original prompt
-5. otherwise, if the image wait times out, run the next retry step
-6. retry steps can be normal prompts or the special sentinel `MAGIC_RETRY`
-7. `MAGIC_RETRY` means: open a new chat and resend the original prompt
-8. the default retry queue is `MAGIC_RETRY`, then the creative-license guidance prompt, then `"Generate!"`
-9. fetch the generated image asset URL(s) directly from the visible image tile(s) and trigger downloads
-10. if download acquisition fails after the image is already visible, keep retrying that same image forever with backoff and a 45-second per-attempt timeout; do not regenerate a fresh image just because download fetches are flaky
-11. if the retry queue is exhausted without a visible image, let the image timeout bubble out; only UI/page-level failures should loop indefinitely
-12. `openNewChat()` is now a recovery loop, not a one-shot shortcut:
+5. otherwise, if the latest assistant turn is a recognizable refusal and the composer is ready again, immediately run the next retry step (guarded by top-level constant `ENABLE_IMAGE_REFUSAL_FAST_RETRY`)
+6. otherwise, if the image wait times out, run the next retry step
+7. retry steps can be normal prompts or the special sentinel `MAGIC_RETRY`
+8. `MAGIC_RETRY` means: open a new chat and resend the original prompt
+9. the default retry queue is `MAGIC_RETRY`, then the creative-license guidance prompt, then `"Generate!"`
+10. fetch the generated image asset URL(s) directly from the visible image tile(s) and trigger downloads
+11. if download acquisition fails after the image is already visible, keep retrying that same image forever with backoff and a 45-second per-attempt timeout; do not regenerate a fresh image just because download fetches are flaky
+12. if the retry queue is exhausted without a visible image, let the image timeout bubble out; only UI/page-level failures should loop indefinitely
+13. `openNewChat()` is now a recovery loop, not a one-shot shortcut:
     - resolve visible dialogs with a conservative allowlist
     - click a visible `New chat` control when available
     - fall back to `fireShortcut("o", "KeyO", { shift: true })`
     - only return once a fresh-chat-ready surface is visible
-13. if composer/send readiness gets stuck, recover in-page forever (unless `skipCurrentPrompt()` is used) instead of throwing a fatal timeout
+14. if composer/send readiness gets stuck, recover in-page forever (unless `skipCurrentPrompt()` is used) instead of throwing a fatal timeout
 
 If this breaks, inspect the generated-image tile selector, the asset URL extraction, and the shortcut dispatch behavior.
+Also inspect the refusal matchers (`IMAGE_REFUSAL_TEXT_PATTERNS`) and the composer-ready gate if retries stop firing immediately after recognizable refusals.
 
 Retry prompts reuse `sendMessage(...)`, so each one waits for the composer/send button instead of requiring immediate sendability at the exact timeout moment.
 `MAGIC_RETRY` uses `openNewChat()` plus the original prompt instead of a follow-up message in the same chat.

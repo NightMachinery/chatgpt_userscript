@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         ChatGPT Message Helper
 // @namespace    https://chatgpt.com/
-// @version      1.1.23
+// @version      1.1.24
 // @description  Reliable message sending helpers for ChatGPT web UI changes.
 // @match        https://chatgpt.com/*
 // @grant        none
@@ -10,6 +10,7 @@
 (function () {
   const IMAGE_DOWNLOAD_TIMEOUT_SECONDS = 400;
   const IMAGE_DOWNLOAD_TIMEOUT_ERROR_MESSAGE = "Timed out waiting for a new visible generated image.";
+  const ENABLE_IMAGE_REFUSAL_FAST_RETRY = true;
   const GENERATED_IMAGE_TARGET_SELECTORS = Object.freeze([
     '[id^="image-"]',
     '.group\\/imagegen-image'
@@ -18,6 +19,11 @@
   const GENERATED_IMAGE_ALT_PATTERN = /^Generated image:/i;
   const IMAGE_LIMIT_RESET_TEXT_PATTERN = /\blimit resets in\b/i;
   const IMAGE_LIMIT_IMAGE_PATTERN = /\bimages?\b|\bimage generations?\b/i;
+  const IMAGE_REFUSAL_TEXT_PATTERNS = Object.freeze([
+    /\bi can[’']?t help generate\b/i,
+    /\bwe[’']?re so sorry, but the image we created may violate our guardrails\b/i,
+    /\bretry or edit your prompt\b/i
+  ]);
   const IMAGE_LIMIT_WAIT_BUFFER_MS = 60000;
   const IMAGE_LIMIT_WAIT_LOG_INTERVAL_MS = 60000;
   const SEND_MODES = Object.freeze({
@@ -1028,6 +1034,26 @@
       .trim();
   }
 
+  function createImageDownloadTimeoutError() {
+    return new Error(IMAGE_DOWNLOAD_TIMEOUT_ERROR_MESSAGE);
+  }
+
+  function createImageRefusalDetectedError(refusalState) {
+    const error = new Error("Detected an image-generation refusal for the latest assistant response.");
+    error.name = "ImageRefusalDetectedError";
+    error.imageRefusalDetected = true;
+    error.refusalState = refusalState || null;
+    return error;
+  }
+
+  function isImageRefusalDetectedError(error) {
+    return Boolean(
+      error &&
+        typeof error === "object" &&
+        (error.imageRefusalDetected === true || error.name === "ImageRefusalDetectedError")
+    );
+  }
+
   function formatDurationParts(totalMs) {
     const safeMs = Math.max(0, Math.trunc(Number(totalMs) || 0));
     const totalSeconds = Math.ceil(safeMs / 1000);
@@ -1111,6 +1137,53 @@
     }
 
     return null;
+  }
+
+  function isComposerReadyForInput() {
+    if (isBusyGenerating()) {
+      return false;
+    }
+    if (getVisibleDialogElements().length > 0) {
+      return false;
+    }
+
+    const prompt = getPromptElement();
+    return Boolean(prompt instanceof Element && isElementVisible(prompt));
+  }
+
+  function matchesImageRefusalText(text) {
+    const normalizedText = normalizeWhitespace(text);
+    return IMAGE_REFUSAL_TEXT_PATTERNS.some((pattern) => pattern.test(normalizedText));
+  }
+
+  function getLatestImageRefusalState(previousAssistantTurnCount = 0) {
+    if (!ENABLE_IMAGE_REFUSAL_FAST_RETRY || !isComposerReadyForInput()) {
+      return null;
+    }
+
+    const assistantTurns = getAssistantTurnElements();
+    const startIndex = Math.max(0, Math.trunc(Number(previousAssistantTurnCount) || 0));
+    if (assistantTurns.length <= startIndex) {
+      return null;
+    }
+
+    const turnIndex = assistantTurns.length - 1;
+    if (turnIndex < startIndex) {
+      return null;
+    }
+
+    const turn = assistantTurns[turnIndex];
+    const text = normalizeWhitespace(turn.textContent || "");
+    if (text.length === 0 || extractImageLimitWaitMs(text) !== null || !matchesImageRefusalText(text)) {
+      return null;
+    }
+
+    return {
+      turn,
+      turnIndex,
+      assistantTurnCount: assistantTurns.length,
+      text
+    };
   }
 
   async function waitForImageGenerationLimitResetState(limitState, options) {
@@ -1380,13 +1453,18 @@
         continue;
       }
 
+      const refusalState = getLatestImageRefusalState(waitOptions.assistantTurnCount);
+      if (refusalState) {
+        throw createImageRefusalDetectedError(refusalState);
+      }
+
       await delayWithCheckpoint(intervalMs, {
         arrayRunController,
         phase: ARRAY_RUN_PHASES.WAITING_GENERATED_IMAGE
       });
     }
 
-    throw new Error(IMAGE_DOWNLOAD_TIMEOUT_ERROR_MESSAGE);
+    throw createImageDownloadTimeoutError();
   }
 
   function isImageDownloadTimeoutError(error) {
@@ -2536,24 +2614,33 @@
           retryCount
         };
       } catch (error) {
-        if (!isImageDownloadTimeoutError(error)) {
+        const refusalDetected = isImageRefusalDetectedError(error);
+        if (!refusalDetected && !isImageDownloadTimeoutError(error)) {
           throw error;
         }
 
         if (retryCount >= retryPromptQueue.length) {
           if (retryCount > 0) {
             console.error(
-              `Timed out waiting for a generated image after ${retryCount} retry step${retryCount === 1 ? "" : "s"}.`
+              `${
+                refusalDetected
+                  ? "Detected an image refusal"
+                  : "Timed out waiting for a generated image"
+              } after ${retryCount} retry step${retryCount === 1 ? "" : "s"}.`
             );
           }
-          throw error;
+          throw refusalDetected ? createImageDownloadTimeoutError() : error;
         }
 
         const retryStep = retryPromptQueue[retryCount];
         const nextRetryNumber = retryCount + 1;
         if (isMagicRetryPrompt(retryStep)) {
           console.warn(
-            `Timed out waiting for a generated image. Running retry step ${nextRetryNumber}/${retryPromptQueue.length}: MAGIC_RETRY.`
+            `${
+              refusalDetected
+                ? "Detected an image refusal."
+                : "Timed out waiting for a generated image."
+            } Running retry step ${nextRetryNumber}/${retryPromptQueue.length}: MAGIC_RETRY.`
           );
           setArrayRunPhase(arrayRunController, ARRAY_RUN_PHASES.RETRYING_PROMPT);
           const retryResult = await runMagicRetry(originalPrompt, {
@@ -2565,7 +2652,11 @@
           waitOptions.assistantTurnCount = retryResult.assistantTurnCount;
         } else {
           console.warn(
-            `Timed out waiting for a generated image. Sending retry step ${nextRetryNumber}/${retryPromptQueue.length} and waiting for the composer to become sendable.`
+            `${
+              refusalDetected
+                ? "Detected an image refusal."
+                : "Timed out waiting for a generated image."
+            } Sending retry step ${nextRetryNumber}/${retryPromptQueue.length} and waiting for the composer to become sendable.`
           );
           setArrayRunPhase(arrayRunController, ARRAY_RUN_PHASES.RETRYING_PROMPT);
           await sendMessage(
