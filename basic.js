@@ -1143,7 +1143,7 @@
       return {
         turn,
         turnIndex: index,
-        assistantTurnCount: assistantTurns.length,
+        assistantTurnCount: latestAssistant.assistantTurnCount,
         text,
         waitMs
       };
