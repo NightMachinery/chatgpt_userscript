@@ -1245,7 +1245,7 @@
     return {
       turn,
       turnIndex,
-      assistantTurnCount: assistantTurns.length,
+      assistantTurnCount: latestAssistant.assistantTurnCount,
       text
     };
   }
