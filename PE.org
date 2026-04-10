@@ -2,6 +2,11 @@
 
 * _
 #+BEGIN_SRC markdown
+I have opened remote chrome and njected basic.js into it and it is now running. Chatgpt  has answered "I can’t help create..." but console doesnt log composer and doesn't send next retry prompt.
+#+END_SRC
+
+* _
+#+BEGIN_SRC markdown
 ```
 tmuxnew chrome-debug /Applications/Google\ Chrome.app/Contents/MacOS/Google\ Chrome \
 --remote-debugging-port=9222 \

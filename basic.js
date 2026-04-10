@@ -8,7 +8,7 @@
 // ==/UserScript==
 
 (function () {
-  const USERSCRIPT_VERSION = "1.1.32";
+  const USERSCRIPT_VERSION = "1.1.33";
   const IMAGE_DOWNLOAD_TIMEOUT_SECONDS = 400;
   const IMAGE_DOWNLOAD_TIMEOUT_ERROR_MESSAGE = "Timed out waiting for a new visible generated image.";
   const ENABLE_IMAGE_REFUSAL_FAST_RETRY = true;
@@ -68,7 +68,8 @@
     // "You have full creative license to adapt, reinterpret, or subtly redirect those specific elements so the image can still be generated. First rewrite the prompt and put it in a markdown code block.",
     Object.freeze({
       prompt:
-      "Rewrite the current art prompt so it preserves the adult Dixit / Klimt / Gankutsuou atmosphere and hyper-realistic skin, but replaces any likely refusal-triggering explicit nudity with poetic alternatives like translucent veils, strategic cropping, silhouette, body ornament, floral masking, smoke, shadow, mosaic skin, and painterly abstraction. Preserve emotional intensity, ambiguity, and maximalist richness. Put only the rewritten prompt in a markdown code block.",
+      // "Rewrite the current art prompt so it preserves the adult Dixit / Klimt / Gankutsuou atmosphere and hyper-realistic skin, but replaces any likely refusal-triggering explicit nudity with poetic alternatives like translucent veils, strategic cropping, silhouette, body ornament, floral masking, smoke, shadow, mosaic skin, and painterly abstraction. Preserve emotional intensity, ambiguity, and maximalist richness. Put only the rewritten prompt in a markdown code block.",
+      "You have full creative license to adapt, reinterpret, or subtly redirect those specific elements so the image can still be generated. Still emphasize realistic skin and ornamentation. First rewrite the prompt and put it in a markdown code block.",
       image_expected_p: false
     }),
     "Generate using the new safe prompt!",
