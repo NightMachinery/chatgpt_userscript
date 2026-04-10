@@ -196,7 +196,7 @@ For `sendMessageRepeatedlyArray(...)` and `sendMessageRepeatedlyArrayChooseFile(
 - `to=0` maps to end-of-array (full range from `from` to the end).
 - `sendMessageRepeatedlyArrayChooseFile(...)` skips entries that are only whitespace after splitting by `sep`; `from`/`to` are applied after that filtering.
 - In `new_chat_image` mode, both array helpers accept `options.imageRetryPrompts` (alias: `options.retryPrompts`) to override the default retry queue passed into `waitForDownloadButtonVisibleWithRetry(...)`.
-- Retry queue entries may be raw strings / `MAGIC_RETRY`, or objects like `{ prompt: "...", image_expected_p: false }`. `image_expected_p` defaults to `true`; when set to `false`, the step waits only for the composer to become sendable again and then immediately advances to the next retry step without waiting for an image from that step.
+- Retry queue entries may be raw strings / `MAGIC_RETRY`, or objects like `{ prompt: "...", image_expected_p: false }`. `image_expected_p` defaults to `true`; when set to `false`, the step waits only for the composer to become ready for the next input again and then immediately advances to the next retry step without waiting for an image from that step.
 
 ## Console Skip Command
 
