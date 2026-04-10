@@ -21,8 +21,9 @@
   const IMAGE_LIMIT_IMAGE_PATTERN = /\bimages?\b|\bimage generations?\b/i;
   const IMAGE_REFUSAL_TEXT_PATTERNS = Object.freeze([
     /\bi can[’']?t help generate\b/i,
-    /\bwe[’']?re so sorry, but the image we created may violate our guardrails\b/i,
-    /\bretry or edit your prompt\b/i
+    /\bwe[’']?re (so )?sorry/i,
+    /\bmay violate our guardrails\b/i,
+    /\bretry (or edit )?your prompt\b/i
   ]);
   const IMAGE_LIMIT_WAIT_BUFFER_MS = 60000;
   const IMAGE_LIMIT_WAIT_LOG_INTERVAL_MS = 60000;
