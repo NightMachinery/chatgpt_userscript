@@ -9,8 +9,8 @@ Keep these APIs working:
 - `promptSet(msg)`
 - `sendMessage(msg, checkInterval, sleep, timeout)`
 - `sendMessageRepeatedly(msg, n, sleep, mode, pick_output_dir)`
-- `sendMessageRepeatedlyArray(msgs, sleep, sep, prefix, postfix, from, to, mode, pick_output_dir)`
-- `sendMessageRepeatedlyArrayChooseFile(sleep, sep, prefix, postfix, from, to, mode, pick_output_dir)`
+- `sendMessageRepeatedlyArray(msgs, sleep, sep, prefix, postfix, selection, mode, pick_output_dir)`
+- `sendMessageRepeatedlyArrayChooseFile(sleep, sep, prefix, postfix, selection, mode, pick_output_dir)`
   - Also accepts an options object in the final slot (or instead of `pick_output_dir`) for behaviors like `imageRetryPrompts`.
 - `openNewChat()`
 - `skipCurrentPrompt()`
@@ -187,14 +187,18 @@ Also inspect the refusal matchers (`IMAGE_REFUSAL_TEXT_PATTERNS`) and the compos
 Retry prompts reuse `sendMessage(...)`, so each one waits for the composer/send button instead of requiring immediate sendability at the exact timeout moment.
 `MAGIC_RETRY` uses `openNewChat()` plus the original prompt instead of a follow-up message in the same chat.
 
-## Array Range Semantics
+## Array Selection Semantics
 
 For `sendMessageRepeatedlyArray(...)` and `sendMessageRepeatedlyArrayChooseFile(...)`:
 
-- `from` is inclusive.
-- `to` is exclusive.
-- `to=0` maps to end-of-array (full range from `from` to the end).
-- `sendMessageRepeatedlyArrayChooseFile(...)` skips entries that are only whitespace after splitting by `sep`; `from`/`to` are applied after that filtering.
+- `selection=""` or omitted `selection` means all prompts.
+- `selection` accepts comma-separated DSL strings like `2..`, `..5`, `4..10, 12, 20..`, plus literal JS arrays like `[4, 5, 6, 12, -1]`.
+- DSL range ends are inclusive, so `4..10` means prompts `4` through `10`.
+- Negative indices are allowed in both forms; `-1` means the last prompt and `-3..-1` means the last three prompts.
+- Selection order and duplicates are preserved exactly as written.
+- Out-of-range single indices are skipped with a warning; malformed selection syntax throws immediately.
+- `sendMessageRepeatedlyArrayChooseFile(...)` skips entries that are only whitespace after splitting by `sep`; `selection` is applied after that filtering.
+- Legacy `from`/`to` array-helper calls now throw a migration error telling the caller to use `selection` instead.
 - In `new_chat_image` mode, both array helpers accept `options.imageRetryPrompts` (alias: `options.retryPrompts`) to override the default retry queue passed into `waitForDownloadButtonVisibleWithRetry(...)`.
 - Retry queue entries may be raw strings / `MAGIC_RETRY`, or objects like `{ prompt: "...", image_expected_p: false }`. `image_expected_p` defaults to `true`; when set to `false`, the step waits only for the composer to become ready for the next input again and then immediately advances to the next retry step without waiting for an image from that step.
 

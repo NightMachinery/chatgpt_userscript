@@ -14,8 +14,8 @@
 The script exposes helpers on =window=:
 - =sendMessage(msg, checkInterval, sleep, timeout)=
 - =sendMessageRepeatedly(msg, n, sleep, mode, pick_output_dir)=
-- =sendMessageRepeatedlyArray(msgs, sleep, sep, prefix, postfix, from, to, mode, pick_output_dir)=
-- =sendMessageRepeatedlyArrayChooseFile(sleep, sep, prefix, postfix, from, to, mode, pick_output_dir)=
+- =sendMessageRepeatedlyArray(msgs, sleep, sep, prefix, postfix, selection, mode, pick_output_dir)=
+- =sendMessageRepeatedlyArrayChooseFile(sleep, sep, prefix, postfix, selection, mode, pick_output_dir)=
 - =openNewChat()=
 - =skipCurrentPrompt()=
 - =clickDallEDownloadButtons(pick_output_dir)=
@@ -26,9 +26,9 @@ Examples:
 #+begin_src js
 sendMessage("Hello");
 sendMessageRepeatedly("Thanks, continue.", n=2, sleep=60,);
-sendMessageRepeatedlyArrayChooseFile(sleep=10, sep="\n", prefix="", postfix="", from=0, to=0, mode="new_chat_image");
-sendMessageRepeatedlyArrayChooseFile(sleep=10, sep="\n", prefix="", postfix="", from=0, to=0, mode="new_chat_image", pick_output_dir=true);
-sendMessageRepeatedlyArrayChooseFile(sleep=10, sep="\n", prefix="", postfix="", from=0, to=0, mode="new_chat_image", { imageRetryPrompts: [MAGIC_RETRY, { prompt: "First rewrite the prompt and put it in a markdown code block.", image_expected_p: false }, "Generate using the new safe prompt!"] });
+sendMessageRepeatedlyArrayChooseFile(sleep=10, sep="\n", prefix="", postfix="", selection="", mode="new_chat_image");
+sendMessageRepeatedlyArrayChooseFile(sleep=10, sep="\n", prefix="", postfix="", selection="4..10, 12, 20..", mode="new_chat_image", pick_output_dir=true);
+sendMessageRepeatedlyArrayChooseFile(sleep=10, sep="\n", prefix="", postfix="", selection=[4, 5, 6, 12, -1], mode="new_chat_image", { imageRetryPrompts: [MAGIC_RETRY, { prompt: "First rewrite the prompt and put it in a markdown code block.", image_expected_p: false }, "Generate using the new safe prompt!"] });
 skipCurrentPrompt();
 clickDallEDownloadButtons();
 waitForImageGenerationLimitReset();
@@ -48,10 +48,13 @@ waitForImageGenerationLimitReset();
 - =openNewChat()= no longer just fires the shortcut and returns. It now waits until a fresh-chat surface is actually ready, resolving visible dialogs with a conservative allowlist (=Leave= / =Discard= / =Stay= / =Cancel= / =Close= etc.), trying a visible =New chat= control when present, and falling back to the shortcut.
 - If the composer/send button gets stuck during retries, the script now enters an in-page recovery loop instead of throwing a fatal =Operation timed out.= It keeps re-finding the composer, dismissing safe dialogs, and logging heartbeat diagnostics until the prompt becomes sendable or you call =skipCurrentPrompt()=.
 - When send/composer readiness returns, the console now logs a =[ready-debug]= event with the latest detected assistant message and whether it matched =IMAGE_REFUSAL_TEXT_PATTERNS=.
-- In array helpers, progress and failure logs use absolute array indices (0-based), so ranges show as =from..to-1=.
-- =to= is an exclusive end index in array helpers.
-- =to= defaults to =0=, and =to=0= maps to end-of-array (send all items from =from=).
-- =sendMessageRepeatedlyArrayChooseFile(...)= skips prompts that are only whitespace after splitting by =sep=, and applies =from= / =to= to that filtered prompt list.
+- In array helpers, progress/failure logs show both selection progress and the absolute prompt index (0-based), e.g. =selection 2/5, prompt 12=.
+- =selection= accepts =""= / omitted for all prompts, comma-separated DSL strings like =2..=, =..5=, =4..10, 12, 20..=, and literal JS arrays like =[4, 5, 6, 12, -1]=.
+- Range ends in the DSL are inclusive: =4..10= means prompts =4= through =10=.
+- Negative indices are allowed in both DSL strings and JS arrays, e.g. =-1= means the last prompt and =-3..-1= means the last three prompts.
+- Selection order and duplicates are preserved exactly as written.
+- =sendMessageRepeatedlyArrayChooseFile(...)= skips prompts that are only whitespace after splitting by =sep=, and applies =selection= to that filtered prompt list.
+- Old =from=/=to= array-helper calls now fail fast with a migration error telling you to use =selection= instead.
 - In =new_chat_image= array mode, downloaded image filenames are normalized to array indices: =x.ext=, =x_1.ext=, =x_2.ext=, ...
 - Set =pick_output_dir=true= to activate picked-folder output. You now pick the exact final folder; if =pick_output_dir= is omitted/false, native browser downloads are used as before.
 - Download helper targets visible generated-image tiles and fetches their current =/backend-api/estuary/content= asset URLs directly.

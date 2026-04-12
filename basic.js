@@ -1,14 +1,14 @@
 // ==UserScript==
 // @name         ChatGPT Message Helper
 // @namespace    https://chatgpt.com/
-// @version      1.1.34
+// @version      1.1.35
 // @description  Reliable message sending helpers for ChatGPT web UI changes.
 // @match        https://chatgpt.com/*
 // @grant        none
 // ==/UserScript==
 
 (function () {
-  const USERSCRIPT_VERSION = "1.1.34";
+  const USERSCRIPT_VERSION = "1.1.35";
   const IMAGE_DOWNLOAD_TIMEOUT_SECONDS = 400;
   const IMAGE_DOWNLOAD_TIMEOUT_ERROR_MESSAGE = "Timed out waiting for a new visible generated image.";
   const ENABLE_IMAGE_REFUSAL_FAST_RETRY = true;
@@ -3147,6 +3147,8 @@
     const progressCurrent =
       options && Number.isFinite(options.progressCurrent) ? options.progressCurrent : index + 1;
     const progressTotal = options && Number.isFinite(options.progressTotal) ? options.progressTotal : total;
+    const promptIndex =
+      options && Number.isFinite(options.promptIndex) ? options.promptIndex : progressCurrent;
     const filenameBaseBuilder =
       options && typeof options.filenameBaseBuilder === "function"
         ? options.filenameBaseBuilder
@@ -3171,7 +3173,7 @@
         originalPrompt,
         arrayRunController,
         outputTarget,
-        promptIndex: progressCurrent
+        promptIndex
       });
       const newButtons = waitResult.buttons;
       const clickedCount = await clickDownloadButtons(newButtons, undefined, {
@@ -3179,7 +3181,7 @@
         arrayRunController,
         outputTarget,
         promptText: originalPrompt,
-        promptIndex: progressCurrent
+        promptIndex
       });
       const retrySuffix =
         waitResult.retryCount > 0
@@ -3188,9 +3190,11 @@
       const completionVerb =
         outputTarget && outputTarget.type === "picked_directory" ? "saved" : "downloaded";
       console.log(
-        `Image ${completionVerb}${retrySuffix} (${progressCurrent}/${progressTotal}) via ${clickedCount} file${
-          clickedCount === 1 ? "" : "s"
-        }.`
+        `Image ${completionVerb}${retrySuffix} (${formatArrayPromptProgress(
+          progressCurrent,
+          progressTotal,
+          promptIndex
+        )}) via ${clickedCount} file${clickedCount === 1 ? "" : "s"}.`
       );
 
       if (index < total - 1) {
@@ -3200,7 +3204,7 @@
           phase: ARRAY_RUN_PHASES.OPENING_NEW_CHAT_AFTER_SUCCESS,
           outputTarget,
           promptText: originalPrompt,
-          promptIndex: progressCurrent
+          promptIndex
         });
         await waitForNextPromptTransition(
           sleepDuration > 0 ? sleepDuration : 1200,
@@ -3304,16 +3308,6 @@
     return Math.trunc(n);
   }
 
-  function clamp(value, min, max) {
-    if (value < min) {
-      return min;
-    }
-    if (value > max) {
-      return max;
-    }
-    return value;
-  }
-
   function normalizeIndex(index, length, zeroMeansLength) {
     if (zeroMeansLength && index === 0) {
       return length;
@@ -3373,14 +3367,239 @@
     };
   }
 
+  function isRecognizedSendMode(value) {
+    if (value === undefined || value === null) {
+      return false;
+    }
+
+    const normalized = String(value).trim().toLowerCase();
+    return normalized === SEND_MODES.CONTINUOUS || normalized === SEND_MODES.NEW_CHAT_IMAGE;
+  }
+
+  function isIntegerCompatibleValue(value) {
+    if (value === undefined || value === null) {
+      return false;
+    }
+    if (typeof value === "string" && value.trim() === "") {
+      return false;
+    }
+    return Number.isFinite(Number(value));
+  }
+
+  function describeArraySelection(selection) {
+    if (selection === undefined || selection === null) {
+      return "all";
+    }
+    if (typeof selection === "string") {
+      return selection === "" ? '""' : selection;
+    }
+    if (Array.isArray(selection)) {
+      try {
+        return JSON.stringify(selection);
+      } catch (error) {
+        return "[array]";
+      }
+    }
+    return String(selection);
+  }
+
+  function createAllArraySelectionIndices(length) {
+    return Array.from({ length }, (_, index) => index);
+  }
+
+  function parseSelectionIndexToken(token, length) {
+    if (!/^-?\d+$/.test(token)) {
+      throw new Error(`Invalid selection index token: "${token}".`);
+    }
+    const normalizedIndex = normalizeIndex(toInteger(token, 0), length, false);
+    if (normalizedIndex < 0 || normalizedIndex >= length) {
+      console.warn(
+        `[selection] Skipping out-of-range index ${token} for ${length} prompt${
+          length === 1 ? "" : "s"
+        }.`
+      );
+      return [];
+    }
+    return [normalizedIndex];
+  }
+
+  function parseSelectionRangeToken(token, length) {
+    const match = token.match(/^(-?\d+)?\.\.(-?\d+)?$/);
+    if (!match) {
+      throw new Error(`Invalid selection range token: "${token}".`);
+    }
+
+    if (length <= 0) {
+      return [];
+    }
+
+    const [, startToken, endToken] = match;
+    if (startToken === undefined && endToken === undefined) {
+      return createAllArraySelectionIndices(length);
+    }
+
+    let startIndex = 0;
+    if (startToken !== undefined) {
+      const normalizedStart = normalizeIndex(toInteger(startToken, 0), length, false);
+      if (normalizedStart >= length) {
+        return [];
+      }
+      startIndex = Math.max(0, normalizedStart);
+    }
+
+    let endIndex = length - 1;
+    if (endToken !== undefined) {
+      const normalizedEnd = normalizeIndex(toInteger(endToken, 0), length, false);
+      if (normalizedEnd < 0) {
+        return [];
+      }
+      endIndex = Math.min(length - 1, normalizedEnd);
+    }
+
+    if (startIndex > endIndex) {
+      return [];
+    }
+
+    const indices = [];
+    for (let index = startIndex; index <= endIndex; index++) {
+      indices.push(index);
+    }
+    return indices;
+  }
+
+  function normalizeArraySelection(selection, length) {
+    if (length <= 0) {
+      return [];
+    }
+
+    if (selection === undefined || selection === null || selection === "") {
+      return createAllArraySelectionIndices(length);
+    }
+
+    if (Array.isArray(selection)) {
+      const indices = [];
+      for (const entry of selection) {
+        if (!isIntegerCompatibleValue(entry)) {
+          throw new Error(`Selection arrays may contain integers only; got: ${String(entry)}`);
+        }
+        indices.push(...parseSelectionIndexToken(String(Math.trunc(Number(entry))), length));
+      }
+      return indices;
+    }
+
+    const selectionText = String(selection).trim();
+    if (selectionText === "") {
+      return createAllArraySelectionIndices(length);
+    }
+
+    const indices = [];
+    for (const rawSegment of selectionText.split(",")) {
+      const segment = rawSegment.trim();
+      if (segment === "") {
+        throw new Error(`Invalid empty selection segment in "${selectionText}".`);
+      }
+      if (segment.includes("..")) {
+        indices.push(...parseSelectionRangeToken(segment, length));
+      } else {
+        indices.push(...parseSelectionIndexToken(segment, length));
+      }
+    }
+    return indices;
+  }
+
+  function createLegacyArraySelectionError() {
+    return new Error(
+      `Legacy from/to array helper arguments are no longer supported. Use selection instead, ` +
+        `for example selection="" (all), selection="2..", or selection="4..10, 12, 20..".`
+    );
+  }
+
+  function normalizeArraySelectionCallArguments(
+    selectionOrMode,
+    modeOrPickOutputDirOrOptions,
+    pickOutputDirOrOptions,
+    maybeLegacyPickOutputDir,
+    options
+  ) {
+    if (
+      isIntegerCompatibleValue(selectionOrMode) &&
+      isIntegerCompatibleValue(modeOrPickOutputDirOrOptions)
+    ) {
+      throw createLegacyArraySelectionError();
+    }
+
+    if (
+      selectionOrMode === undefined ||
+      selectionOrMode === null ||
+      typeof selectionOrMode === "boolean" ||
+      isPlainObject(selectionOrMode)
+    ) {
+      return {
+        selection: undefined,
+        mode: undefined,
+        pickOutputDirOrOptions: selectionOrMode,
+        maybeLegacyPickOutputDir: modeOrPickOutputDirOrOptions,
+        options: pickOutputDirOrOptions
+      };
+    }
+
+    if (
+      isRecognizedSendMode(selectionOrMode) &&
+      !isRecognizedSendMode(modeOrPickOutputDirOrOptions)
+    ) {
+      return {
+        selection: undefined,
+        mode: selectionOrMode,
+        pickOutputDirOrOptions: modeOrPickOutputDirOrOptions,
+        maybeLegacyPickOutputDir: pickOutputDirOrOptions,
+        options: maybeLegacyPickOutputDir
+      };
+    }
+
+    if (
+      (Array.isArray(selectionOrMode) ||
+        (typeof selectionOrMode === "string" && !isRecognizedSendMode(selectionOrMode))) &&
+      (modeOrPickOutputDirOrOptions === undefined ||
+        modeOrPickOutputDirOrOptions === null ||
+        typeof modeOrPickOutputDirOrOptions === "boolean" ||
+        isPlainObject(modeOrPickOutputDirOrOptions))
+    ) {
+      return {
+        selection: selectionOrMode,
+        mode: undefined,
+        pickOutputDirOrOptions: modeOrPickOutputDirOrOptions,
+        maybeLegacyPickOutputDir: pickOutputDirOrOptions,
+        options: maybeLegacyPickOutputDir
+      };
+    }
+
+    return {
+      selection: selectionOrMode,
+      mode: modeOrPickOutputDirOrOptions,
+      pickOutputDirOrOptions,
+      maybeLegacyPickOutputDir,
+      options
+    };
+  }
+
+  function formatArrayPromptProgress(selectionPosition, totalSelected, absoluteIndex) {
+    const segments = [];
+    if (Number.isFinite(selectionPosition) && Number.isFinite(totalSelected)) {
+      segments.push(`selection ${selectionPosition}/${totalSelected}`);
+    }
+    if (Number.isFinite(absoluteIndex)) {
+      segments.push(`prompt ${absoluteIndex}`);
+    }
+    return segments.join(", ");
+  }
+
   async function sendMessageRepeatedlyArray(
     msgs,
     sleep,
     sep,
     prefix,
     postfix,
-    from,
-    to,
+    selection,
     mode,
     pickOutputDirOrOptions,
     maybeLegacyPickOutputDir,
@@ -3391,12 +3610,19 @@
     const separator = sep ?? "\n";
     const prefixText = prefix ?? "";
     const postfixText = postfix ?? "";
-    const sendMode = normalizeSendMode(mode);
-    const useNewChat = sendMode === SEND_MODES.NEW_CHAT_IMAGE;
-    const normalizedArgs = normalizeArrayOutputArguments(
+    const normalizedCallArgs = normalizeArraySelectionCallArguments(
+      selection,
+      mode,
       pickOutputDirOrOptions,
       maybeLegacyPickOutputDir,
       options
+    );
+    const sendMode = normalizeSendMode(normalizedCallArgs.mode);
+    const useNewChat = sendMode === SEND_MODES.NEW_CHAT_IMAGE;
+    const normalizedArgs = normalizeArrayOutputArguments(
+      normalizedCallArgs.pickOutputDirOrOptions,
+      normalizedCallArgs.maybeLegacyPickOutputDir,
+      normalizedCallArgs.options
     );
     const continueOnImageDownloadTimeout = Boolean(
       useNewChat && normalizedArgs.options && normalizedArgs.options.continueOnImageDownloadTimeout
@@ -3418,51 +3644,59 @@
       return;
     }
 
-    const fromIndexRaw = toInteger(from, 0);
-    const toIndexRaw = toInteger(to, 0);
-    const fromIndex = clamp(normalizeIndex(fromIndexRaw, messages.length, false), 0, messages.length);
-    const toIndexExclusive = clamp(normalizeIndex(toIndexRaw, messages.length, true), 0, messages.length);
-
-    if (fromIndex >= toIndexExclusive) {
-      console.log(`No messages to send for range from=${fromIndexRaw}, to=${toIndexRaw}.`);
+    const selectedIndices = normalizeArraySelection(normalizedCallArgs.selection, messages.length);
+    if (selectedIndices.length === 0) {
+      console.log(
+        `No messages to send for selection ${describeArraySelection(normalizedCallArgs.selection)}.`
+      );
       return;
     }
 
-    const selectedMessages = messages.slice(fromIndex, toIndexExclusive);
-    const lastIndex = toIndexExclusive - 1;
+    const selectedEntries = selectedIndices.map((absoluteIndex) => ({
+      absoluteIndex,
+      message: messages[absoluteIndex]
+    }));
     if (activeArrayRunController && activeArrayRunController.active) {
       throw new Error("An array prompt run is already active; cannot start another skippable array run.");
     }
     const outputTarget =
-      useNewChat && selectedMessages.length > 0
+      useNewChat && selectedEntries.length > 0
         ? await resolveOutputTarget(normalizedArgs.pickOutputDir)
         : null;
 
     const arrayRunController = createArrayRunController({
       useNewChat,
-      totalSelected: selectedMessages.length
+      totalSelected: selectedEntries.length
     });
     activeArrayRunController = arrayRunController;
 
     try {
-      if (useNewChat && selectedMessages.length > 0) {
+      if (useNewChat && selectedEntries.length > 0) {
+        const firstEntry = selectedEntries[0];
         setArrayRunPhase(arrayRunController, ARRAY_RUN_PHASES.OPENING_NEW_CHAT_BEFORE_START);
         console.log("[new_chat_image] Opening a fresh chat before starting the array run.");
         await openNewChat({
           arrayRunController,
           phase: ARRAY_RUN_PHASES.OPENING_NEW_CHAT_BEFORE_START,
           outputTarget,
-          promptText: selectedMessages[0],
-          promptIndex: fromIndex
+          promptText: firstEntry.message,
+          promptIndex: firstEntry.absoluteIndex
         });
       }
 
-      for (let i = 0; i < selectedMessages.length; i++) {
-        const absoluteIndex = fromIndex + i;
-        const fullPrompt = `${prefixText}${selectedMessages[i]}${postfixText}`;
-        const hasNextPrompt = i < selectedMessages.length - 1;
+      for (let i = 0; i < selectedEntries.length; i++) {
+        const entry = selectedEntries[i];
+        const absoluteIndex = entry.absoluteIndex;
+        const selectionPosition = i + 1;
+        const fullPrompt = `${prefixText}${entry.message}${postfixText}`;
+        const hasNextPrompt = i < selectedEntries.length - 1;
         const previousButtons = useNewChat ? captureDownloadTargetKeys() : undefined;
         const previousAssistantTurnCount = useNewChat ? getAssistantTurnElements().length : 0;
+        const progressLabel = formatArrayPromptProgress(
+          selectionPosition,
+          selectedEntries.length,
+          absoluteIndex
+        );
 
         setArrayRunCurrentPrompt(arrayRunController, absoluteIndex, fullPrompt);
 
@@ -3476,18 +3710,19 @@
             previousAssistantTurnCount: previousAssistantTurnCount
           });
           markArrayRunCurrentPromptSent(arrayRunController);
-          console.log(`Message sent (${absoluteIndex}/${lastIndex}).`);
+          console.log(`Message sent (${progressLabel}).`);
 
           await handlePostSend(
             i,
-            selectedMessages.length,
+            selectedEntries.length,
             sleepDuration,
             sleepSeconds,
             useNewChat,
             previousButtons,
             {
-              progressCurrent: absoluteIndex,
-              progressTotal: lastIndex,
+              progressCurrent: selectionPosition,
+              progressTotal: selectedEntries.length,
+              promptIndex: absoluteIndex,
               assistantTurnCount: previousAssistantTurnCount,
               originalPrompt: fullPrompt,
               arrayRunController,
@@ -3514,12 +3749,14 @@
 
           const failedFilename = await downloadTextFile(
             fullPrompt,
-            `failed_prompt_${absoluteIndex}_of_${lastIndex}`,
+            `failed_prompt_${absoluteIndex}_selection_${selectionPosition}_of_${selectedEntries.length}`,
             outputTarget
           );
           console.error(
-            `Timed out waiting for a generated image (${absoluteIndex}/${lastIndex}). ` +
-              `Saved failed prompt to "${failedFilename}" in ${describeOutputTarget(outputTarget)}. Continuing.`,
+            `Timed out waiting for a generated image (${progressLabel}). ` +
+              `Saved failed prompt to "${failedFilename}" in ${describeOutputTarget(
+                outputTarget
+              )}. Continuing.`,
             error
           );
 
@@ -3657,19 +3894,25 @@
     sep,
     prefix,
     postfix,
-    from,
-    to,
+    selection,
     mode,
     pick_output_dir,
     legacy_pick_output_dir,
     options
   ) {
     const fileText = await chooseFileAsText();
-    const sendMode = normalizeSendMode(mode);
-    const normalizedArgs = normalizeChooseFileOutputArguments(
+    const normalizedCallArgs = normalizeArraySelectionCallArguments(
+      selection,
+      mode,
       pick_output_dir,
       legacy_pick_output_dir,
       options
+    );
+    const sendMode = normalizeSendMode(normalizedCallArgs.mode);
+    const normalizedArgs = normalizeChooseFileOutputArguments(
+      normalizedCallArgs.pickOutputDirOrOptions,
+      normalizedCallArgs.maybeLegacyPickOutputDir,
+      normalizedCallArgs.options
     );
     await sendMessageRepeatedlyArray(
       fileText,
@@ -3677,8 +3920,7 @@
       sep,
       prefix,
       postfix,
-      from,
-      to,
+      normalizedCallArgs.selection,
       sendMode,
       normalizedArgs.pickOutputDir,
       {
@@ -3719,8 +3961,8 @@
 
   // Keep these globals so this call style works in console:
   // sendMessageRepeatedly("Thanks, continue.", n=2, sleep=60,)
-  // sendMessageRepeatedlyArray("Prompt 1\nPrompt 2", sleep=10, sep="\n", prefix="", postfix="", from=0, to=0, mode="continuous")
-  // sendMessageRepeatedlyArrayChooseFile(sleep=10, sep="\n", prefix="", postfix="", from=0, to=0, mode="new_chat_image", pick_output_dir=true)
+  // sendMessageRepeatedlyArray("Prompt 1\nPrompt 2", sleep=10, sep="\n", prefix="", postfix="", selection="", mode="continuous")
+  // sendMessageRepeatedlyArrayChooseFile(sleep=10, sep="\n", prefix="", postfix="", selection="", mode="new_chat_image", pick_output_dir=true)
   // skipCurrentPrompt()
   if (!("n" in window)) {
     window.n = undefined;
@@ -3737,11 +3979,8 @@
   if (!("postfix" in window)) {
     window.postfix = undefined;
   }
-  if (!("from" in window)) {
-    window.from = undefined;
-  }
-  if (!("to" in window)) {
-    window.to = undefined;
+  if (!("selection" in window)) {
+    window.selection = undefined;
   }
   if (!("mode" in window)) {
     window.mode = undefined;
