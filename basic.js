@@ -1,16 +1,17 @@
 // ==UserScript==
 // @name         ChatGPT Message Helper
 // @namespace    https://chatgpt.com/
-// @version      1.1.36
+// @version      1.1.37
 // @description  Reliable message sending helpers for ChatGPT web UI changes.
 // @match        https://chatgpt.com/*
 // @grant        none
 // ==/UserScript==
 
 (function () {
-  const USERSCRIPT_VERSION = "1.1.36";
+  const USERSCRIPT_VERSION = "1.1.37";
   const IMAGE_DOWNLOAD_TIMEOUT_SECONDS = 400;
   const IMAGE_DOWNLOAD_TIMEOUT_ERROR_MESSAGE = "Timed out waiting for a new visible generated image.";
+  const IMAGE_RETRY_BUTTON_COUNT = 3;
   const ENABLE_IMAGE_REFUSAL_FAST_RETRY = true;
   const GENERATED_IMAGE_TARGET_SELECTORS = Object.freeze([
     '[id^="image-"]',
@@ -1069,6 +1070,22 @@
     );
   }
 
+  function createImageGenerationFailedUiError(failureState) {
+    const error = new Error('Detected latest assistant "Image generation failed" UI.');
+    error.name = "ImageGenerationFailedUiError";
+    error.imageGenerationFailedUi = true;
+    error.failureState = failureState || null;
+    return error;
+  }
+
+  function isImageGenerationFailedUiError(error) {
+    return Boolean(
+      error &&
+        typeof error === "object" &&
+        (error.imageGenerationFailedUi === true || error.name === "ImageGenerationFailedUiError")
+    );
+  }
+
   function formatDurationParts(totalMs) {
     const safeMs = Math.max(0, Math.trunc(Number(totalMs) || 0));
     const totalSeconds = Math.ceil(safeMs / 1000);
@@ -1248,6 +1265,41 @@
       turnIndex,
       assistantTurnCount: latestAssistant.assistantTurnCount,
       text
+    };
+  }
+
+  function getLatestImageGenerationFailedUiState(previousAssistantTurnCount = 0) {
+    const latestAssistant = getLatestAssistantMessageState(previousAssistantTurnCount);
+    if (!latestAssistant.turn) {
+      return null;
+    }
+
+    const turn = latestAssistant.turn;
+    const text = latestAssistant.latestAssistantText;
+    if (!/\bimage generation failed\b/i.test(text)) {
+      return null;
+    }
+
+    const tryAgainButton = Array.from(turn.querySelectorAll("button")).find((button) => {
+      if (!isElementVisible(button) || isElementDisabled(button)) {
+        return false;
+      }
+
+      const label = normalizeWhitespace(
+        button.getAttribute("aria-label") || button.innerText || button.textContent || ""
+      );
+      return /^try again$/i.test(label);
+    });
+    if (!tryAgainButton) {
+      return null;
+    }
+
+    return {
+      turn,
+      turnIndex: latestAssistant.latestAssistantTurnIndex,
+      assistantTurnCount: latestAssistant.assistantTurnCount,
+      text,
+      button: tryAgainButton
     };
   }
 
@@ -1483,6 +1535,7 @@
     const arrayRunController = waitOptions.arrayRunController;
     let trackedPreviousButtons = previousButtons;
     let deadline = Date.now() + timeoutMs;
+    let imageRetryButtonClickCount = 0;
 
     while (Date.now() < deadline) {
       setArrayRunPhase(arrayRunController, ARRAY_RUN_PHASES.WAITING_GENERATED_IMAGE);
@@ -1521,6 +1574,31 @@
       const refusalState = getLatestImageRefusalState(waitOptions.assistantTurnCount);
       if (refusalState) {
         throw createImageRefusalDetectedError(refusalState);
+      }
+
+      const imageGenerationFailedUiState = getLatestImageGenerationFailedUiState(
+        waitOptions.assistantTurnCount
+      );
+      if (imageGenerationFailedUiState) {
+        if (imageRetryButtonClickCount >= IMAGE_RETRY_BUTTON_COUNT) {
+          throw createImageGenerationFailedUiError({
+            ...imageGenerationFailedUiState,
+            retryButtonClickCount: imageRetryButtonClickCount
+          });
+        }
+
+        imageRetryButtonClickCount += 1;
+        console.warn(
+          `[image-retry-ui] Detected "Image generation failed". Clicking in-turn "Try again" button ` +
+            `${imageRetryButtonClickCount}/${IMAGE_RETRY_BUTTON_COUNT}.`
+        );
+        imageGenerationFailedUiState.button.click();
+        await delayWithCheckpoint(UI_RECOVERY_ACTION_SETTLE_MS, {
+          arrayRunController,
+          phase: ARRAY_RUN_PHASES.WAITING_GENERATED_IMAGE
+        });
+        deadline = Date.now() + timeoutMs;
+        continue;
       }
 
       await delayWithCheckpoint(intervalMs, {
@@ -2935,7 +3013,8 @@
         };
       } catch (error) {
         const refusalDetected = isImageRefusalDetectedError(error);
-        if (!refusalDetected && !isImageDownloadTimeoutError(error)) {
+        const imageGenerationFailedUiDetected = isImageGenerationFailedUiError(error);
+        if (!refusalDetected && !imageGenerationFailedUiDetected && !isImageDownloadTimeoutError(error)) {
           throw error;
         }
 
@@ -2946,11 +3025,17 @@
                 `${
                   refusalDetected
                     ? "Detected an image refusal"
-                    : "Timed out waiting for a generated image"
+                    : imageGenerationFailedUiDetected
+                      ? `Detected latest assistant "Image generation failed" UI after exhausting ${IMAGE_RETRY_BUTTON_COUNT} in-turn "Try again" click${
+                          IMAGE_RETRY_BUTTON_COUNT === 1 ? "" : "s"
+                        }`
+                      : "Timed out waiting for a generated image"
                 } after ${retryCount} retry step${retryCount === 1 ? "" : "s"}.`
               );
             }
-            throw refusalDetected ? createImageDownloadTimeoutError() : error;
+            throw refusalDetected || imageGenerationFailedUiDetected
+              ? createImageDownloadTimeoutError()
+              : error;
           }
 
           const retryStep = retryPromptQueue[retryCount];
@@ -2969,6 +3054,10 @@
               `${
                 refusalDetected
                   ? "Detected an image refusal."
+                  : imageGenerationFailedUiDetected
+                    ? `Detected latest assistant "Image generation failed" UI after exhausting ${IMAGE_RETRY_BUTTON_COUNT} in-turn "Try again" click${
+                        IMAGE_RETRY_BUTTON_COUNT === 1 ? "" : "s"
+                      }.`
                   : "Timed out waiting for a generated image."
               } Running retry step ${nextRetryNumber}/${retryPromptQueue.length}: MAGIC_RETRY.`
             );
@@ -2988,6 +3077,10 @@
             `${
               refusalDetected
                 ? "Detected an image refusal."
+                : imageGenerationFailedUiDetected
+                  ? `Detected latest assistant "Image generation failed" UI after exhausting ${IMAGE_RETRY_BUTTON_COUNT} in-turn "Try again" click${
+                      IMAGE_RETRY_BUTTON_COUNT === 1 ? "" : "s"
+                    }.`
                 : "Timed out waiting for a generated image."
             } Sending retry step ${nextRetryNumber}/${retryPromptQueue.length} and waiting for the composer to become ready for the next input.`
           );

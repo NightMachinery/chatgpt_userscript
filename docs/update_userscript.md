@@ -165,24 +165,26 @@ When `mode === "new_chat_image"` in repeated send helpers, current flow is:
 1. open a fresh chat before the first prompt, even if the user launched the helper from an existing conversation
 2. send prompt
 3. wait until a visible generated image appears for the newest response
-4. if ChatGPT instead replies with an image-limit reset message (`...limit resets in ...`), parse the duration, log the wait, wait through the reset window, then retry by opening a new chat and resending the original prompt
-5. otherwise, if the latest assistant turn is a recognizable refusal and the composer is ready again, immediately run the next retry step (guarded by top-level constant `ENABLE_IMAGE_REFUSAL_FAST_RETRY`)
-6. otherwise, if the image wait times out, run the next retry step
-7. retry steps can be normal prompts or the special sentinel `MAGIC_RETRY`
-8. `MAGIC_RETRY` means: open a new chat and resend the original prompt
-9. the default retry queue is `MAGIC_RETRY`, then the creative-license guidance prompt, then `"Generate!"`
-10. fetch the generated image asset URL(s) directly from the visible image tile(s) and trigger downloads
-11. if download acquisition fails after the image is already visible, keep retrying that same image forever with backoff and a 45-second per-attempt timeout; do not regenerate a fresh image just because download fetches are flaky
-12. if the retry queue is exhausted without a visible image, let the image timeout bubble out; only UI/page-level failures should loop indefinitely
-13. `openNewChat()` is now a recovery loop, not a one-shot shortcut:
+4. if the latest assistant turn shows the current failure UI (`Image generation failed` plus an enabled in-turn `Try again` button), click that button automatically up to `IMAGE_RETRY_BUTTON_COUNT` times before consuming the main retry queue
+5. if ChatGPT instead replies with an image-limit reset message (`...limit resets in ...`), parse the duration, log the wait, wait through the reset window, then retry by opening a new chat and resending the original prompt
+6. otherwise, if the latest assistant turn is a recognizable refusal and the composer is ready again, immediately run the next retry step (guarded by top-level constant `ENABLE_IMAGE_REFUSAL_FAST_RETRY`)
+7. otherwise, if the image wait times out, run the next retry step
+8. retry steps can be normal prompts or the special sentinel `MAGIC_RETRY`
+9. `MAGIC_RETRY` means: open a new chat and resend the original prompt
+10. the default retry queue is `MAGIC_RETRY`, then the creative-license guidance prompt, then `"Generate!"`
+11. fetch the generated image asset URL(s) directly from the visible image tile(s) and trigger downloads
+12. if download acquisition fails after the image is already visible, keep retrying that same image forever with backoff and a 45-second per-attempt timeout; do not regenerate a fresh image just because download fetches are flaky
+13. if the retry queue is exhausted without a visible image, let the image timeout bubble out; only UI/page-level failures should loop indefinitely
+14. `openNewChat()` is now a recovery loop, not a one-shot shortcut:
     - resolve visible dialogs with a conservative allowlist
     - click a visible `New chat` control when available
     - fall back to `fireShortcut("o", "KeyO", { shift: true })`
     - only return once a fresh-chat-ready surface is visible
-14. if composer/send readiness gets stuck, recover in-page forever (unless `skipCurrentPrompt()` is used) instead of throwing a fatal timeout
+15. if composer/send readiness gets stuck, recover in-page forever (unless `skipCurrentPrompt()` is used) instead of throwing a fatal timeout
 
 If this breaks, inspect the generated-image tile selector, the asset URL extraction, and the shortcut dispatch behavior.
 Also inspect the refusal matchers (`IMAGE_REFUSAL_TEXT_PATTERNS`) and the composer-ready gate if retries stop firing immediately after recognizable refusals.
+For the current failure UI, prefer detecting the latest assistant turn text plus an in-turn `Try again` button instead of a page-global retry/regenerate search.
 
 Retry prompts reuse `sendMessage(...)`, so each one waits for the composer/send button instead of requiring immediate sendability at the exact timeout moment.
 `MAGIC_RETRY` uses `openNewChat()` plus the original prompt instead of a follow-up message in the same chat.
