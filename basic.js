@@ -1,14 +1,14 @@
 // ==UserScript==
 // @name         ChatGPT Message Helper
 // @namespace    https://chatgpt.com/
-// @version      1.1.37
+// @version      1.1.38
 // @description  Reliable message sending helpers for ChatGPT web UI changes.
 // @match        https://chatgpt.com/*
 // @grant        none
 // ==/UserScript==
 
 (function () {
-  const USERSCRIPT_VERSION = "1.1.37";
+  const USERSCRIPT_VERSION = "1.1.38";
   const IMAGE_DOWNLOAD_TIMEOUT_SECONDS = 400;
   const IMAGE_DOWNLOAD_TIMEOUT_ERROR_MESSAGE = "Timed out waiting for a new visible generated image.";
   const IMAGE_RETRY_BUTTON_COUNT = 3;
@@ -1588,11 +1588,22 @@
         }
 
         imageRetryButtonClickCount += 1;
+        console.warn("[image-retry-ui] Detected latest assistant \"Image generation failed\" UI.", {
+          retryButtonClickCount: imageRetryButtonClickCount,
+          retryButtonCountLimit: IMAGE_RETRY_BUTTON_COUNT,
+          assistantTurnCount: imageGenerationFailedUiState.assistantTurnCount,
+          assistantTurnIndex: imageGenerationFailedUiState.turnIndex,
+          assistantText: imageGenerationFailedUiState.text
+        });
         console.warn(
-          `[image-retry-ui] Detected "Image generation failed". Clicking in-turn "Try again" button ` +
+          `[image-retry-ui] Clicking in-turn "Try again" button ` +
             `${imageRetryButtonClickCount}/${IMAGE_RETRY_BUTTON_COUNT}.`
         );
         imageGenerationFailedUiState.button.click();
+        console.log(
+          `[image-retry-ui] Clicked in-turn "Try again" button ` +
+            `${imageRetryButtonClickCount}/${IMAGE_RETRY_BUTTON_COUNT}.`
+        );
         await delayWithCheckpoint(UI_RECOVERY_ACTION_SETTLE_MS, {
           arrayRunController,
           phase: ARRAY_RUN_PHASES.WAITING_GENERATED_IMAGE
