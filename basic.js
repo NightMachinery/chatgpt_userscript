@@ -25,7 +25,8 @@
     /\bi (can[’’']?t|cannot|can not) help\b/i,
     /\bwe[’']?re (so )?sorry/i,
     /\bmay violate our guardrails\b/i,
-    /\bretry (or edit )?your prompt\b/i
+    /\bretry (or edit )?your prompt\b/i,
+    /\bexperienced an error\b/i
   ]);
   const IMAGE_LIMIT_WAIT_BUFFER_MS = 60000;
   const IMAGE_LIMIT_WAIT_LOG_INTERVAL_MS = 60000;
