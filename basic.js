@@ -1,18 +1,19 @@
 // ==UserScript==
 // @name         ChatGPT Message Helper
 // @namespace    https://chatgpt.com/
-// @version      1.1.38
+// @version      1.1.39
 // @description  Reliable message sending helpers for ChatGPT web UI changes.
 // @match        https://chatgpt.com/*
 // @grant        none
 // ==/UserScript==
 
 (function () {
-  const USERSCRIPT_VERSION = "1.1.38";
+  const USERSCRIPT_VERSION = "1.1.39";
   const IMAGE_DOWNLOAD_TIMEOUT_SECONDS = 400;
   const IMAGE_DOWNLOAD_TIMEOUT_ERROR_MESSAGE = "Timed out waiting for a new visible generated image.";
   const IMAGE_RETRY_BUTTON_COUNT = 3;
   const ENABLE_IMAGE_REFUSAL_FAST_RETRY = true;
+  const IMAGE_POST_DETECTION_SETTLE_MS = 10000;
   const GENERATED_IMAGE_TARGET_SELECTORS = Object.freeze([
     '[id^="image-"]',
     '.group\\/imagegen-image'
@@ -113,6 +114,7 @@
   const UI_RECOVERY_POLL_MS = 250;
   const UI_RECOVERY_ACTION_SETTLE_MS = 1200;
   const NEW_CHAT_RECOVERY_TIMEOUT_MS = 60000;
+  const NEW_CHAT_POST_OPEN_VERIFICATION_DELAY_MS = 3000;
   const SAFE_DIALOG_CONFIRM_LABEL_PATTERNS = Object.freeze([
     /^leave$/i,
     /^discard$/i,
@@ -461,7 +463,7 @@
     };
   }
 
-  function getConversationTurnElements() {
+  function getConversationTurnElements(options) {
     return collectElementsBySelectors(
       [
         '#thread [data-testid^="conversation-turn-"]',
@@ -470,9 +472,15 @@
         '[data-turn-id][data-turn]'
       ],
       {
-        includeHidden: true
+        includeHidden: Boolean(options && options.includeHidden)
       }
     );
+  }
+
+  function getVisibleConversationTurnElements() {
+    return getConversationTurnElements({
+      includeHidden: false
+    });
   }
 
   function getUserTurnElements() {
@@ -625,7 +633,10 @@
     return {
       url: String(window.location.href || ""),
       path: getCurrentPathname(),
-      conversationTurnCount: getConversationTurnElements().length,
+      conversationTurnCount: getConversationTurnElements({
+        includeHidden: true
+      }).length,
+      visibleConversationTurnCount: getVisibleConversationTurnElements().length,
       assistantTurnCount: getAssistantTurnElements().length,
       userTurnCount: getUserTurnElements().length,
       promptVisible: Boolean(prompt && isElementVisible(prompt)),
@@ -643,19 +654,40 @@
       return false;
     }
 
-    if (currentState.conversationTurnCount === 0) {
+    if (currentState.visibleConversationTurnCount === 0) {
       return true;
     }
 
-    if (
+    return Boolean(
       previousState &&
       currentState.path !== previousState.path &&
-      currentState.promptBlank
-    ) {
+      currentState.promptBlank &&
+      currentState.visibleConversationTurnCount === 0
+    );
+  }
+
+  async function verifyFreshChatReady(previousState, options) {
+    if (!isFreshChatReady(previousState)) {
+      return false;
+    }
+
+    const arrayRunController = options && options.arrayRunController;
+    const phase = options && options.phase;
+    await delayWithCheckpoint(NEW_CHAT_POST_OPEN_VERIFICATION_DELAY_MS, {
+      arrayRunController,
+      phase
+    });
+
+    const verifiedState = captureChatSurfaceState();
+    if (verifiedState.visibleConversationTurnCount === 0 && isFreshChatReady(previousState)) {
       return true;
     }
 
-    return currentState.path === "/" && currentState.promptBlank;
+    console.warn(
+      `[new-chat] Fresh chat verification failed after ${formatDurationForLog(NEW_CHAT_POST_OPEN_VERIFICATION_DELAY_MS)}; visible old messages remain. Retrying.`,
+      verifiedState
+    );
+    return false;
   }
 
   function buildUiRecoveryState(options) {
@@ -686,7 +718,10 @@
       sendButtonLabel: sendButton ? getElementActionLabel(sendButton) : "",
       assistantTurnCount: getAssistantTurnElements().length,
       userTurnCount: getUserTurnElements().length,
-      conversationTurnCount: getConversationTurnElements().length,
+      conversationTurnCount: getConversationTurnElements({
+        includeHidden: true
+      }).length,
+      visibleConversationTurnCount: getVisibleConversationTurnElements().length,
       visibleDialogs: getVisibleDialogSummaries()
     };
   }
@@ -717,6 +752,7 @@
       `assistant_turn_count: ${state.assistantTurnCount || 0}`,
       `user_turn_count: ${state.userTurnCount || 0}`,
       `conversation_turn_count: ${state.conversationTurnCount || 0}`,
+      `visible_conversation_turn_count: ${state.visibleConversationTurnCount || 0}`,
       "visible_dialogs:"
     ];
 
@@ -814,7 +850,12 @@
     const promptIndex =
       options && Number.isFinite(options.promptIndex) ? options.promptIndex : null;
     const previousState = captureChatSurfaceState();
-    if (isFreshChatReady(previousState)) {
+    if (
+      await verifyFreshChatReady(previousState, {
+        arrayRunController,
+        phase
+      })
+    ) {
       return;
     }
 
@@ -826,7 +867,12 @@
       const cycleStartedAt = Date.now();
       while (Date.now() - cycleStartedAt < NEW_CHAT_RECOVERY_TIMEOUT_MS) {
         throwIfSkipCurrentPromptRequested(arrayRunController, phase || ARRAY_RUN_PHASES.OPENING_NEW_CHAT_FOR_RETRY);
-        if (isFreshChatReady(previousState)) {
+        if (
+          await verifyFreshChatReady(previousState, {
+            arrayRunController,
+            phase
+          })
+        ) {
           return;
         }
 
@@ -836,7 +882,12 @@
           preferConfirmNavigation: true
         });
         if (dialogResult.handled) {
-          if (isFreshChatReady(previousState)) {
+          if (
+            await verifyFreshChatReady(previousState, {
+              arrayRunController,
+              phase
+            })
+          ) {
             return;
           }
           continue;
@@ -850,7 +901,12 @@
             arrayRunController,
             phase
           });
-          if (isFreshChatReady(previousState)) {
+          if (
+            await verifyFreshChatReady(previousState, {
+              arrayRunController,
+              phase
+            })
+          ) {
             return;
           }
         }
@@ -860,7 +916,12 @@
           arrayRunController,
           phase
         });
-        if (isFreshChatReady(previousState)) {
+        if (
+          await verifyFreshChatReady(previousState, {
+            arrayRunController,
+            phase
+          })
+        ) {
           return;
         }
 
@@ -1542,8 +1603,39 @@
       setArrayRunPhase(arrayRunController, ARRAY_RUN_PHASES.WAITING_GENERATED_IMAGE);
       throwIfSkipCurrentPromptRequested(arrayRunController, ARRAY_RUN_PHASES.WAITING_GENERATED_IMAGE);
       const buttons = getNewDownloadButtons(trackedPreviousButtons);
-      if (buttons.length > 0) {
+      if (buttons.length > 1) {
         return buttons;
+      }
+      if (buttons.length === 1) {
+        console.log(
+          `[image-detect] Found 1 generated image; waiting ${formatDurationForLog(IMAGE_POST_DETECTION_SETTLE_MS)} for any additional images.`
+        );
+        await delayWithCheckpoint(IMAGE_POST_DETECTION_SETTLE_MS, {
+          arrayRunController,
+          phase: ARRAY_RUN_PHASES.WAITING_GENERATED_IMAGE
+        });
+        const settledButtons = getNewDownloadButtons(trackedPreviousButtons);
+        const combinedButtons = [];
+        const seenKeys = new Set();
+        const seenElements = new Set();
+        for (const candidate of [...buttons, ...settledButtons]) {
+          if (!(candidate instanceof Element) || seenElements.has(candidate)) {
+            continue;
+          }
+          const key = getDownloadTargetKey(candidate);
+          if (key && seenKeys.has(key)) {
+            continue;
+          }
+          seenElements.add(candidate);
+          if (key) {
+            seenKeys.add(key);
+          }
+          combinedButtons.push(candidate);
+        }
+        if (combinedButtons.length > buttons.length) {
+          console.log(`[image-detect] Found ${combinedButtons.length} generated images after settle wait.`);
+        }
+        return combinedButtons;
       }
 
       const imageLimitState = getImageGenerationLimitResetState(waitOptions.assistantTurnCount);

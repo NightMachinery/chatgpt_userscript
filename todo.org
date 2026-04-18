@@ -1,6 +1,8 @@
 #+TITLE: chatgpt_userscript/todo
 
-* after detecting an image, wait for a constant (default to 10 seconds) and see if you cannot find another image too. Sometimes the model generates two images at once.
+* DONE after detecting an image, wait for a constant (default to 10 seconds) and see if you cannot find another image too. Sometimes the model generates two images at once.
+
+* DONE sometimes opening a new chat does not work. after a few seconds (a new constant), check if there are indeed no previous messages in the chat; if there are, retry opening a new chat.
 
 * DONE allow setting custom =DEFAULT_IMAGE_RETRY_PROMPTS= in =sendMessageRepeatedlyArrayChooseFile= (dep injection)
 
