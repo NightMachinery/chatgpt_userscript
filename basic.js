@@ -1,19 +1,19 @@
 // ==UserScript==
 // @name         ChatGPT Message Helper
 // @namespace    https://chatgpt.com/
-// @version      1.1.39
+// @version      1.1.41
 // @description  Reliable message sending helpers for ChatGPT web UI changes.
 // @match        https://chatgpt.com/*
 // @grant        none
 // ==/UserScript==
 
 (function () {
-  const USERSCRIPT_VERSION = "1.1.39";
+  const USERSCRIPT_VERSION = "1.1.41";
   const IMAGE_DOWNLOAD_TIMEOUT_SECONDS = 400;
   const IMAGE_DOWNLOAD_TIMEOUT_ERROR_MESSAGE = "Timed out waiting for a new visible generated image.";
   const IMAGE_RETRY_BUTTON_COUNT = 3;
   const ENABLE_IMAGE_REFUSAL_FAST_RETRY = true;
-  const IMAGE_POST_DETECTION_SETTLE_MS = 10000;
+  const IMAGE_POST_DETECTION_SETTLE_MS = 90000;
   const GENERATED_IMAGE_TARGET_SELECTORS = Object.freeze([
     '[id^="image-"]',
     '.group\\/imagegen-image'
@@ -1603,12 +1603,11 @@
       setArrayRunPhase(arrayRunController, ARRAY_RUN_PHASES.WAITING_GENERATED_IMAGE);
       throwIfSkipCurrentPromptRequested(arrayRunController, ARRAY_RUN_PHASES.WAITING_GENERATED_IMAGE);
       const buttons = getNewDownloadButtons(trackedPreviousButtons);
-      if (buttons.length > 1) {
-        return buttons;
-      }
-      if (buttons.length === 1) {
+      if (buttons.length > 0) {
         console.log(
-          `[image-detect] Found 1 generated image; waiting ${formatDurationForLog(IMAGE_POST_DETECTION_SETTLE_MS)} for any additional images.`
+          `[image-detect] Found ${buttons.length} generated image${
+            buttons.length === 1 ? "" : "s"
+          }; waiting ${formatDurationForLog(IMAGE_POST_DETECTION_SETTLE_MS)} before downloading.`
         );
         await delayWithCheckpoint(IMAGE_POST_DETECTION_SETTLE_MS, {
           arrayRunController,
