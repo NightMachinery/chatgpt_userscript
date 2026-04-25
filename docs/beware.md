@@ -1,10 +1,6 @@
 # Beware: Timer Bugs in Browser Automation
 
-This userscript runs inside ChatGPT's page, so browser scheduling rules apply. In
-backgrounded, hidden, unfocused, battery-saver, or otherwise throttled tabs,
-`setTimeout(..., 250)` is not guaranteed to run 250ms later. A callback may run
-seconds or minutes late, and a frozen/discarded page may not run JavaScript at all
-until it resumes.
+This userscript runs inside ChatGPT's page, so browser scheduling rules apply. In backgrounded, hidden, unfocused, battery-saver, or otherwise throttled tabs, `setTimeout(..., 250)` is not guaranteed to run 250ms later. A callback may run seconds or minutes late, and a frozen/discarded page may not run JavaScript at all until it resumes.
 
 ## Do not decrement timers by intended sleep slices
 
