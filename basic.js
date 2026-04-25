@@ -13,7 +13,7 @@
   const IMAGE_DOWNLOAD_TIMEOUT_ERROR_MESSAGE = "Timed out waiting for a new visible generated image.";
   const IMAGE_RETRY_BUTTON_COUNT = 3;
   const ENABLE_IMAGE_REFUSAL_FAST_RETRY = true;
-  const IMAGE_POST_DETECTION_SETTLE_MS = 90000;
+  const IMAGE_POST_DETECTION_SETTLE_MS = 45000;
   const GENERATED_IMAGE_TARGET_SELECTORS = Object.freeze([
     '[id^="image-"]',
     '.group\\/imagegen-image'
