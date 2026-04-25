@@ -1,14 +1,14 @@
 // ==UserScript==
 // @name         ChatGPT Message Helper
 // @namespace    https://chatgpt.com/
-// @version      1.1.41
+// @version      1.1.42
 // @description  Reliable message sending helpers for ChatGPT web UI changes.
 // @match        https://chatgpt.com/*
 // @grant        none
 // ==/UserScript==
 
 (function () {
-  const USERSCRIPT_VERSION = "1.1.41";
+  const USERSCRIPT_VERSION = "1.1.42";
   const IMAGE_DOWNLOAD_TIMEOUT_SECONDS = 400;
   const IMAGE_DOWNLOAD_TIMEOUT_ERROR_MESSAGE = "Timed out waiting for a new visible generated image.";
   const IMAGE_RETRY_BUTTON_COUNT = 3;
@@ -137,8 +137,18 @@
   let activeArrayRunController = null;
   let nextArrayRunId = 1;
 
-  function delay(duration) {
-    return new Promise((resolve) => setTimeout(resolve, duration));
+  function getMonotonicNowMs() {
+    if (
+      window.performance &&
+      typeof window.performance.now === "function"
+    ) {
+      return window.performance.now();
+    }
+    return Date.now();
+  }
+
+  function sleepTimer(ms) {
+    return new Promise((resolve) => window.setTimeout(resolve, ms));
   }
 
   function createArrayRunController({ useNewChat, totalSelected }) {
@@ -252,7 +262,7 @@
     throw createSkipCurrentPromptError(controller, context);
   }
 
-  async function delayWithCheckpoint(duration, options) {
+  async function sleepForMs(duration, options) {
     const totalMs = Math.max(0, Math.trunc(Number(duration) || 0));
     if (totalMs === 0) {
       return;
@@ -260,6 +270,9 @@
 
     const arrayRunController = options && options.arrayRunController;
     const phase = options && options.phase ? options.phase : null;
+    const onCheckpoint =
+      options && typeof options.onCheckpoint === "function" ? options.onCheckpoint : null;
+    const skipCheckEnabled = !options || options.skipCheck !== false;
     const sliceMs = Math.max(
       50,
       Math.trunc((options && options.sliceMs) || 250)
@@ -269,15 +282,56 @@
       setArrayRunPhase(arrayRunController, phase);
     }
 
-    let remainingMs = totalMs;
-    while (remainingMs > 0) {
-      throwIfSkipCurrentPromptRequested(arrayRunController, phase || "delay");
-      const waitMs = Math.min(sliceMs, remainingMs);
-      await delay(waitMs);
-      remainingMs -= waitMs;
+    if (!onCheckpoint && !isActiveArrayRunController(arrayRunController)) {
+      await sleepTimer(totalMs);
+      return;
     }
 
-    throwIfSkipCurrentPromptRequested(arrayRunController, phase || "delay");
+    const startedAt = getMonotonicNowMs();
+    const deadline = startedAt + totalMs;
+
+    while (true) {
+      const now = getMonotonicNowMs();
+      const remainingMs = deadline - now;
+      if (remainingMs <= 0) {
+        break;
+      }
+
+      if (onCheckpoint) {
+        const checkpointResult = await onCheckpoint({
+          elapsedMs: now - startedAt,
+          remainingMs,
+          totalMs,
+          phase
+        });
+        if (checkpointResult && checkpointResult.done) {
+          return checkpointResult.value;
+        }
+      }
+
+      if (skipCheckEnabled) {
+        throwIfSkipCurrentPromptRequested(arrayRunController, phase || "sleep");
+      }
+
+      const waitMs = Math.min(sliceMs, remainingMs);
+      await sleepTimer(waitMs);
+    }
+
+    if (onCheckpoint) {
+      const checkpointResult = await onCheckpoint({
+        elapsedMs: totalMs,
+        remainingMs: 0,
+        totalMs,
+        phase
+      });
+      if (checkpointResult && checkpointResult.done) {
+        return checkpointResult.value;
+      }
+    }
+
+    if (skipCheckEnabled) {
+      throwIfSkipCurrentPromptRequested(arrayRunController, phase || "sleep");
+    }
   }
 
   async function waitForNextPromptTransition(duration, controller) {
@@ -286,23 +340,26 @@
       return { advancedEarly: false };
     }
 
-    setArrayRunPhase(controller, ARRAY_RUN_PHASES.SLEEPING_BEFORE_NEXT_PROMPT);
-    let remainingMs = totalMs;
-    while (remainingMs > 0) {
-      if (isActiveArrayRunController(controller) && controller.skipRequested) {
-        console.warn(
-          `[skip] Advancing immediately after prompt ${controller.currentAbsoluteIndex} during inter-prompt wait.`
-        );
-        clearArrayRunSkipRequest(controller);
-        return { advancedEarly: true };
+    const result = await sleepForMs(totalMs, {
+      arrayRunController: controller,
+      phase: ARRAY_RUN_PHASES.SLEEPING_BEFORE_NEXT_PROMPT,
+      skipCheck: false,
+      onCheckpoint: () => {
+        if (isActiveArrayRunController(controller) && controller.skipRequested) {
+          console.warn(
+            `[skip] Advancing immediately after prompt ${controller.currentAbsoluteIndex} during inter-prompt wait.`
+          );
+          clearArrayRunSkipRequest(controller);
+          return {
+            done: true,
+            value: { advancedEarly: true }
+          };
+        }
+        return null;
       }
+    });
 
-      const waitMs = Math.min(250, remainingMs);
-      await delay(waitMs);
-      remainingMs -= waitMs;
-    }
-
-    return { advancedEarly: false };
+    return result || { advancedEarly: false };
   }
 
   function collectElementsBySelectors(selectors, options) {
@@ -444,7 +501,7 @@
         const label = getElementActionLabel(candidate.target);
         console.warn(`[ui-recovery] Clicking dialog action "${label}" (${candidate.type}).`);
         candidate.target.click();
-        await delayWithCheckpoint(UI_RECOVERY_ACTION_SETTLE_MS, {
+        await sleepForMs(UI_RECOVERY_ACTION_SETTLE_MS, {
           arrayRunController,
           phase
         });
@@ -673,7 +730,7 @@
 
     const arrayRunController = options && options.arrayRunController;
     const phase = options && options.phase;
-    await delayWithCheckpoint(NEW_CHAT_POST_OPEN_VERIFICATION_DELAY_MS, {
+    await sleepForMs(NEW_CHAT_POST_OPEN_VERIFICATION_DELAY_MS, {
       arrayRunController,
       phase
     });
@@ -825,7 +882,7 @@
       } catch (_) {}
     }
 
-    await delayWithCheckpoint(Math.max(UI_RECOVERY_POLL_MS, 100), {
+    await sleepForMs(Math.max(UI_RECOVERY_POLL_MS, 100), {
       arrayRunController,
       phase
     });
@@ -897,7 +954,7 @@
         if (newChatControl) {
           console.log(`[new-chat] Clicking visible control "${getElementActionLabel(newChatControl)}".`);
           newChatControl.click();
-          await delayWithCheckpoint(UI_RECOVERY_ACTION_SETTLE_MS, {
+          await sleepForMs(UI_RECOVERY_ACTION_SETTLE_MS, {
             arrayRunController,
             phase
           });
@@ -912,7 +969,7 @@
         }
 
         fireShortcut("o", "KeyO", { shift: true });
-        await delayWithCheckpoint(UI_RECOVERY_ACTION_SETTLE_MS, {
+        await sleepForMs(UI_RECOVERY_ACTION_SETTLE_MS, {
           arrayRunController,
           phase
         });
@@ -930,7 +987,7 @@
           nextHeartbeatAt = Date.now() + UI_RECOVERY_HEARTBEAT_MS;
         }
 
-        await delayWithCheckpoint(UI_RECOVERY_POLL_MS, {
+        await sleepForMs(UI_RECOVERY_POLL_MS, {
           arrayRunController,
           phase
         });
@@ -1400,7 +1457,7 @@
           : remainingMs > 60 * 1000
             ? Math.min(15 * 1000, remainingMs)
             : Math.min(5 * 1000, remainingMs);
-      await delayWithCheckpoint(sleepMs, {
+      await sleepForMs(sleepMs, {
         arrayRunController,
         phase: ARRAY_RUN_PHASES.WAITING_IMAGE_LIMIT_RESET,
         sliceMs: 1000
@@ -1609,7 +1666,7 @@
             buttons.length === 1 ? "" : "s"
           }; waiting ${formatDurationForLog(IMAGE_POST_DETECTION_SETTLE_MS)} before downloading.`
         );
-        await delayWithCheckpoint(IMAGE_POST_DETECTION_SETTLE_MS, {
+        await sleepForMs(IMAGE_POST_DETECTION_SETTLE_MS, {
           arrayRunController,
           phase: ARRAY_RUN_PHASES.WAITING_GENERATED_IMAGE
         });
@@ -1696,7 +1753,7 @@
           `[image-retry-ui] Clicked in-turn "Try again" button ` +
             `${imageRetryButtonClickCount}/${IMAGE_RETRY_BUTTON_COUNT}.`
         );
-        await delayWithCheckpoint(UI_RECOVERY_ACTION_SETTLE_MS, {
+        await sleepForMs(UI_RECOVERY_ACTION_SETTLE_MS, {
           arrayRunController,
           phase: ARRAY_RUN_PHASES.WAITING_GENERATED_IMAGE
         });
@@ -1704,7 +1761,7 @@
         continue;
       }
 
-      await delayWithCheckpoint(intervalMs, {
+      await sleepForMs(intervalMs, {
         arrayRunController,
         phase: ARRAY_RUN_PHASES.WAITING_GENERATED_IMAGE
       });
@@ -2008,7 +2065,7 @@
         }
 
         try {
-          await delayWithCheckpoint(delayMs, {
+          await sleepForMs(delayMs, {
             arrayRunController,
             phase: ARRAY_RUN_PHASES.DOWNLOADING_IMAGES
           });
@@ -2588,7 +2645,7 @@
 
     if (regenerateButton && !regenerateButton.disabled) {
       regenerateButton.click();
-      await delayWithCheckpoint(1200, {
+      await sleepForMs(1200, {
         arrayRunController: options && options.arrayRunController,
         phase: options && options.phase ? options.phase : ARRAY_RUN_PHASES.WAITING_SEND_READY
       });
@@ -2652,7 +2709,7 @@
           if (sendButton && !isElementDisabled(sendButton)) {
             const waited = Date.now() - startTime;
             if (waited < sleepMs) {
-              await delayWithCheckpoint(sleepMs - waited, {
+              await sleepForMs(sleepMs - waited, {
                 arrayRunController,
                 phase
               });
@@ -2721,7 +2778,7 @@
         cycleStartedAt = Date.now();
       }
 
-      await delayWithCheckpoint(checkInterval, {
+      await sleepForMs(checkInterval, {
         arrayRunController,
         phase
       });
@@ -2831,7 +2888,7 @@
         cycleStartedAt = Date.now();
       }
 
-      await delayWithCheckpoint(intervalMs, {
+      await sleepForMs(intervalMs, {
         arrayRunController,
         phase
       });
@@ -2936,7 +2993,7 @@
         cycleStartedAt = Date.now();
       }
 
-      await delayWithCheckpoint(intervalMs, {
+      await sleepForMs(intervalMs, {
         arrayRunController,
         phase
       });
@@ -3322,7 +3379,7 @@
         console.log(
           `Pausing ${DOWNLOAD_CLICK_BURST_DELAY_MS / 1000} seconds after ${clickedCount} download clicks...`
         );
-        await delayWithCheckpoint(DOWNLOAD_CLICK_BURST_DELAY_MS, {
+        await sleepForMs(DOWNLOAD_CLICK_BURST_DELAY_MS, {
           arrayRunController,
           phase: ARRAY_RUN_PHASES.DOWNLOADING_IMAGES
         });

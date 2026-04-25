@@ -165,7 +165,7 @@ When `mode === "new_chat_image"` in repeated send helpers, current flow is:
 1. open a fresh chat before the first prompt, even if the user launched the helper from an existing conversation
 2. send prompt
 3. wait until a visible generated image appears for the newest response
-   - once the first new generated image(s) are visible, wait `IMAGE_POST_DETECTION_SETTLE_MS` (default 90 seconds) once and rescan so delayed additional images are included before download starts
+   - once the first new generated image(s) are visible, wait `IMAGE_POST_DETECTION_SETTLE_MS` (default 45 seconds) once and rescan so delayed additional images are included before download starts; this wait uses wall-clock elapsed time so normal background-tab timer throttling does not multiply the delay
 4. if the latest assistant turn shows the current failure UI (`Image generation failed` plus an enabled in-turn `Try again` button), click that button automatically up to `IMAGE_RETRY_BUTTON_COUNT` times before consuming the main retry queue
 5. if ChatGPT instead replies with an image-limit reset message (`...limit resets in ...`), parse the duration, log the wait, wait through the reset window, then retry by opening a new chat and resending the original prompt
 6. otherwise, if the latest assistant turn is a recognizable refusal and the composer is ready again, immediately run the next retry step (guarded by top-level constant `ENABLE_IMAGE_REFUSAL_FAST_RETRY`)
