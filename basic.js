@@ -1,14 +1,14 @@
 // ==UserScript==
 // @name         ChatGPT Message Helper
 // @namespace    https://chatgpt.com/
-// @version      1.1.42
+// @version      1.1.43
 // @description  Reliable message sending helpers for ChatGPT web UI changes.
 // @match        https://chatgpt.com/*
 // @grant        none
 // ==/UserScript==
 
 (function () {
-  const USERSCRIPT_VERSION = "1.1.42";
+  const USERSCRIPT_VERSION = "1.1.43";
   const IMAGE_DOWNLOAD_TIMEOUT_SECONDS = 400;
   const IMAGE_DOWNLOAD_TIMEOUT_ERROR_MESSAGE = "Timed out waiting for a new visible generated image.";
   const IMAGE_RETRY_BUTTON_COUNT = 3;
@@ -4196,7 +4196,8 @@
   }
 
   // Export helpers so they are callable from devtools console.
-  window.delay = delay;
+  window.delay = sleepForMs;
+  window.sleepForMs = sleepForMs;
   window.fireShortcut = fireShortcut;
   window.sendModes = SEND_MODES;
   window.promptSet = promptSet;
