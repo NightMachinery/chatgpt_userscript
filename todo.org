@@ -1,6 +1,26 @@
 #+TITLE: chatgpt_userscript/todo
 
-* fix user interation required for opening save-directory dialogue
+* DONE fix user interaction required for opening save-directory dialogue
+#+begin_example
+userscript.html?name=ChatGPT-Message-Helper.user.js&id=0436d2d0-523b-47e2-a4e7-2ad4bfae1e52:2084 Uncaught (in promise) Error: Output directory picker was blocked. Call the helper from a user interaction and try again.
+    at createOutputDirectoryError (userscript.html?name=ChatGPT-Message-Helper.user.js&id=0436d2d0-523b-47e2-a4e7-2ad4bfae1e52:2084:19)
+    at createPickedOutputTarget (userscript.html?name=ChatGPT-Message-Helper.user.js&id=0436d2d0-523b-47e2-a4e7-2ad4bfae1e52:2202:15)
+    at async sendMessageRepeatedlyArray (userscript.html?name=ChatGPT-Message-Helper.user.js&id=0436d2d0-523b-47e2-a4e7-2ad4bfae1e52:3918:11)
+    at async sendMessageRepeatedlyArrayChooseFile (userscript.html?name=ChatGPT-Message-Helper.user.js&id=0436d2d0-523b-47e2-a4e7-2ad4bfae1e52:4171:5)Caused by: SecurityError: Failed to execute 'showDirectoryPicker' on 'Window': Must be handling a user gesture to show a file picker.
+    at showOutputDirectoryPicker (userscript.html?name=ChatGPT-Message-Helper.user.js&id=0436d2d0-523b-47e2-a4e7-2ad4bfae1e52:2178:27)
+    at createPickedOutputTarget (userscript.html?name=ChatGPT-Message-Helper.user.js&id=0436d2d0-523b-47e2-a4e7-2ad4bfae1e52:2196:35)
+    at resolveOutputTarget (userscript.html?name=ChatGPT-Message-Helper.user.js&id=0436d2d0-523b-47e2-a4e7-2ad4bfae1e52:2284:12)
+    at sendMessageRepeatedlyArray (userscript.html?name=ChatGPT-Message-Helper.user.js&id=0436d2d0-523b-47e2-a4e7-2ad4bfae1e52:3918:17)
+    at sendMessageRepeatedlyArrayChooseFile (userscript.html?name=ChatGPT-Message-Helper.user.js&id=0436d2d0-523b-47e2-a4e7-2ad4bfae1e52:4171:11)
+createOutputDirectoryError @ userscript.html?name=ChatGPT-Message-Helper.user.js&id=0436d2d0-523b-47e2-a4e7-2ad4bfae1e52:2084
+createPickedOutputTarget @ userscript.html?name=ChatGPT-Message-Helper.user.js&id=0436d2d0-523b-47e2-a4e7-2ad4bfae1e52:2202
+await in createPickedOutputTarget
+resolveOutputTarget @ userscript.html?name=ChatGPT-Message-Helper.user.js&id=0436d2d0-523b-47e2-a4e7-2ad4bfae1e52:2284
+sendMessageRepeatedlyArray @ userscript.html?name=ChatGPT-Message-Helper.user.js&id=0436d2d0-523b-47e2-a4e7-2ad4bfae1e52:3918
+sendMessageRepeatedlyArrayChooseFile @ userscript.html?name=ChatGPT-Message-Helper.user.js&id=0436d2d0-523b-47e2-a4e7-2ad4bfae1e52:4171
+await in sendMessageRepeatedlyArrayChooseFile
+(anonymous) @ VM900:173
+#+end_example
 
 * DONE after detecting an image, wait for a constant (default to 10 seconds) and see if you cannot find another image too. Sometimes the model generates two images at once.
 

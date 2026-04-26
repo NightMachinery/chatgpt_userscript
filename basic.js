@@ -1,14 +1,14 @@
 // ==UserScript==
 // @name         ChatGPT Message Helper
 // @namespace    https://chatgpt.com/
-// @version      1.1.44
+// @version      1.1.45
 // @description  Reliable message sending helpers for ChatGPT web UI changes.
 // @match        https://chatgpt.com/*
 // @grant        none
 // ==/UserScript==
 
 (function () {
-  const USERSCRIPT_VERSION = "1.1.44";
+  const USERSCRIPT_VERSION = "1.1.45";
   const IMAGE_DOWNLOAD_TIMEOUT_SECONDS = 500;
   const IMAGE_DOWNLOAD_TIMEOUT_ERROR_MESSAGE = "Timed out waiting for a new visible generated image.";
   const IMAGE_RETRY_BUTTON_COUNT = 3;
@@ -2087,6 +2087,12 @@
     return error;
   }
 
+  function createNamedError(name, message) {
+    const error = new Error(message);
+    error.name = name;
+    return error;
+  }
+
   function downloadBlobWithAnchor(blob, filename) {
     const safeFilename = buildSafeFilename(filename);
     const url = URL.createObjectURL(blob);
@@ -2189,10 +2195,177 @@
     }
   }
 
+  function isOutputDirectoryUserActivationKnown() {
+    return Boolean(
+      typeof navigator !== "undefined" &&
+        navigator &&
+        navigator.userActivation &&
+        typeof navigator.userActivation.isActive === "boolean"
+    );
+  }
+
+  function isOutputDirectoryUserActivationActive() {
+    return Boolean(
+      typeof navigator !== "undefined" &&
+        navigator &&
+        navigator.userActivation &&
+        navigator.userActivation.isActive === true
+    );
+  }
+
+  function createOutputDirectoryActivationPrompt() {
+    const overlay = document.createElement("div");
+    overlay.setAttribute("role", "dialog");
+    overlay.setAttribute("aria-modal", "true");
+    overlay.style.position = "fixed";
+    overlay.style.inset = "0";
+    overlay.style.zIndex = "2147483647";
+    overlay.style.display = "flex";
+    overlay.style.alignItems = "center";
+    overlay.style.justifyContent = "center";
+    overlay.style.background = "rgba(0, 0, 0, 0.45)";
+    overlay.style.fontFamily =
+      'ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif';
+
+    const panel = document.createElement("div");
+    panel.style.maxWidth = "420px";
+    panel.style.margin = "16px";
+    panel.style.padding = "18px";
+    panel.style.borderRadius = "14px";
+    panel.style.boxShadow = "0 20px 60px rgba(0, 0, 0, 0.35)";
+    panel.style.background = "#fff";
+    panel.style.color = "#111827";
+
+    const title = document.createElement("div");
+    title.textContent = "Choose output folder";
+    title.style.fontSize = "18px";
+    title.style.fontWeight = "700";
+    title.style.marginBottom = "8px";
+
+    const message = document.createElement("div");
+    message.textContent =
+      "The browser requires a real click before opening the save-directory dialog. The helper is paused until you choose a folder.";
+    message.style.fontSize = "14px";
+    message.style.lineHeight = "1.45";
+    message.style.marginBottom = "14px";
+
+    const status = document.createElement("div");
+    status.textContent = "";
+    status.style.minHeight = "20px";
+    status.style.fontSize = "13px";
+    status.style.color = "#4b5563";
+    status.style.marginBottom = "12px";
+
+    const actions = document.createElement("div");
+    actions.style.display = "flex";
+    actions.style.gap = "8px";
+    actions.style.justifyContent = "flex-end";
+
+    const chooseButton = document.createElement("button");
+    chooseButton.type = "button";
+    chooseButton.textContent = "Choose output folder";
+    chooseButton.style.border = "0";
+    chooseButton.style.borderRadius = "10px";
+    chooseButton.style.padding = "10px 14px";
+    chooseButton.style.background = "#111827";
+    chooseButton.style.color = "#fff";
+    chooseButton.style.cursor = "pointer";
+    chooseButton.style.fontWeight = "600";
+
+    const cancelButton = document.createElement("button");
+    cancelButton.type = "button";
+    cancelButton.textContent = "Cancel";
+    cancelButton.style.border = "1px solid #d1d5db";
+    cancelButton.style.borderRadius = "10px";
+    cancelButton.style.padding = "10px 14px";
+    cancelButton.style.background = "#fff";
+    cancelButton.style.color = "#111827";
+    cancelButton.style.cursor = "pointer";
+
+    actions.append(cancelButton, chooseButton);
+    panel.append(title, message, status, actions);
+    overlay.append(panel);
+
+    return { overlay, chooseButton, cancelButton, status };
+  }
+
+  function waitForOutputDirectoryUserGesture() {
+    return new Promise((resolve, reject) => {
+      const prompt = createOutputDirectoryActivationPrompt();
+      let settled = false;
+
+      const cleanup = () => {
+        prompt.chooseButton.removeEventListener("click", onChoose);
+        prompt.cancelButton.removeEventListener("click", onCancel);
+        prompt.overlay.remove();
+      };
+
+      const settleResolve = (value) => {
+        if (settled) {
+          return;
+        }
+        settled = true;
+        cleanup();
+        resolve(value);
+      };
+
+      const settleReject = (error) => {
+        if (settled) {
+          return;
+        }
+        settled = true;
+        cleanup();
+        reject(error);
+      };
+
+      const onChoose = () => {
+        prompt.chooseButton.disabled = true;
+        prompt.cancelButton.disabled = true;
+        prompt.chooseButton.style.cursor = "wait";
+        prompt.cancelButton.style.cursor = "wait";
+        prompt.status.textContent = "Opening browser folder picker...";
+
+        const pickerPromise = showOutputDirectoryPicker();
+        pickerPromise.then(settleResolve, settleReject);
+      };
+
+      const onCancel = () => {
+        settleReject(
+          createNamedError(
+            "AbortError",
+            "Output directory selection was canceled before opening the folder picker."
+          )
+        );
+      };
+
+      prompt.chooseButton.addEventListener("click", onChoose);
+      prompt.cancelButton.addEventListener("click", onCancel);
+      document.body.appendChild(prompt.overlay);
+      prompt.chooseButton.focus();
+    });
+  }
+
+  async function chooseOutputDirectoryHandle() {
+    if (!isOutputDirectoryUserActivationKnown() || isOutputDirectoryUserActivationActive()) {
+      try {
+        return await showOutputDirectoryPicker();
+      } catch (error) {
+        if (!(error && typeof error === "object" && error.name === "SecurityError")) {
+          throw error;
+        }
+      }
+    }
+
+    console.log(
+      "[output] Waiting for a click to open the output directory picker; browser user activation is required."
+    );
+    return waitForOutputDirectoryUserGesture();
+  }
+
   async function createPickedOutputTarget() {
     let baseDirectoryHandle;
     try {
-      baseDirectoryHandle = await showOutputDirectoryPicker();
+      baseDirectoryHandle = await chooseOutputDirectoryHandle();
     } catch (error) {
       if (error && typeof error === "object" && error.name === "AbortError") {
         throw createOutputDirectoryError("Output directory selection was canceled.", error);

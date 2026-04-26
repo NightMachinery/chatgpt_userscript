@@ -57,11 +57,11 @@ waitForImageGenerationLimitReset();
 - =sendMessageRepeatedlyArrayChooseFile(...)= skips prompts that are only whitespace after splitting by =sep=, and applies =selection= to that filtered prompt list.
 - Old =from=/=to= array-helper calls now fail fast with a migration error telling you to use =selection= instead.
 - In =new_chat_image= array mode, downloaded image filenames are normalized to array indices: =x.ext=, =x_1.ext=, =x_2.ext=, ...
-- Set =pick_output_dir=true= to activate picked-folder output. You now pick the exact final folder; if =pick_output_dir= is omitted/false, native browser downloads are used as before.
+- Set =pick_output_dir=true= to activate picked-folder output. You now pick the exact final folder; if the browser requires a fresh user gesture, the script pauses and shows an in-page =Choose output folder= button before opening the native directory picker. If =pick_output_dir= is omitted/false, native browser downloads are used as before.
 - Download helper targets visible generated-image tiles and fetches their current =/backend-api/estuary/content= asset URLs directly.
 - Benign upstream console noise is expected sometimes (for example =Permissions-Policy ... browsing-topics=, =connectors/check 400=, =sentinel/ping 400=, or ChatGPT's own =net::ERR_HTTP2_PING_FAILED= lines). The userscript does not treat those as failures by themselves.
 - Additional upstream console warnings such as ChatGPT accessibility/router noise (=aria-hidden retained focus=, =DialogContent requires a DialogTitle=, =A router only supports one blocker at a time=) are also treated as symptoms to recover around, not as direct failure signals.
-- Picked-folder mode uses the File System Access API, so unsupported browsers or blocked/canceled directory picks fail early with a clear error.
+- Picked-folder mode uses the File System Access API, so unsupported browsers or canceled directory picks fail early with a clear error; blocked directory picks fall back to the in-page user-gesture button when possible.
 - Downloader throttling is built in: after every 10 image downloads, it waits 1.1 seconds before continuing.
 - =clickDallEDownloadButtons()= may require manually scrolling to the top of the chat so the target generated images are mounted/visible.
 - =waitForImageGenerationLimitReset()= is also exported for manual use on the current page; pass a nonzero =previousAssistantTurnCount= if you need to ignore older assistant messages.
