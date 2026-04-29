@@ -5,10 +5,19 @@
 - repeated message sending with delay
 - bulk downloading generated images
 
+=disable_paste_intercept.js= is a smaller userscript for common AI chat sites
+that prevents long plain-text pastes from being intercepted and converted into
+file attachments. It inserts clipboard =text/plain= directly into the focused
+editor.
+
 * Install
 1. Install a userscript manager (Tampermonkey/Violentmonkey).
 2. Create a new script and paste =basic.js=.
 3. Open =https://chatgpt.com/=.
+
+To disable long-paste file conversion, create a second userscript and paste
+=disable_paste_intercept.js=. It currently targets ChatGPT, Claude, Gemini, and
+Perplexity.
 
 * Quick use (browser console)
 The script exposes helpers on =window=:
