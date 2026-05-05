@@ -1,14 +1,14 @@
 // ==UserScript==
 // @name         ChatGPT Message Helper
 // @namespace    https://chatgpt.com/
-// @version      1.1.46
+// @version      1.1.47
 // @description  Reliable message sending helpers for ChatGPT web UI changes.
 // @match        https://chatgpt.com/*
 // @grant        none
 // ==/UserScript==
 
 (function () {
-  const USERSCRIPT_VERSION = "1.1.46";
+  const USERSCRIPT_VERSION = "1.1.47";
   const IMAGE_DOWNLOAD_TIMEOUT_SECONDS = 500;
   const IMAGE_DOWNLOAD_TIMEOUT_ERROR_MESSAGE = "Timed out waiting for a new visible generated image.";
   const IMAGE_RETRY_BUTTON_COUNT = 3;
@@ -3275,6 +3275,47 @@
     };
   }
 
+  async function runInChatLimitRecovery(prompt, options) {
+    const normalizedPrompt = String(prompt ?? "").trim();
+    if (normalizedPrompt.length === 0) {
+      throw new Error("Image limit recovery requires a prompt to resend.");
+    }
+
+    const arrayRunController = options && options.arrayRunController;
+    const outputTarget = options && options.outputTarget;
+    const promptIndex = options && Number.isFinite(options.promptIndex) ? options.promptIndex : null;
+    const assistantTurnCount = getAssistantTurnElements().length;
+    const previousButtons = captureDownloadTargetKeys();
+    console.warn(
+      "[image-limit] Limit wait finished; staying in the current chat and resending the active image prompt.",
+      {
+        promptIndex,
+        assistantTurnCount,
+        prompt: summarizePromptForLog(normalizedPrompt)
+      }
+    );
+    setArrayRunPhase(arrayRunController, ARRAY_RUN_PHASES.RETRYING_PROMPT);
+    await sendMessage(
+      normalizedPrompt,
+      undefined,
+      undefined,
+      IMAGE_DOWNLOAD_TIMEOUT_SECONDS,
+      {
+        arrayRunController,
+        outputTarget,
+        promptText: normalizedPrompt,
+        promptIndex,
+        operationLabel: "image_limit_recovery_send",
+        previousAssistantTurnCount: assistantTurnCount
+      }
+    );
+
+    return {
+      assistantTurnCount,
+      previousButtons
+    };
+  }
+
   function normalizeRetryPrompts(retryPrompts) {
     const sourcePrompts = Array.isArray(retryPrompts)
       ? retryPrompts
@@ -3331,8 +3372,9 @@
     const outputTarget = waitOptions.outputTarget;
     const promptIndex = Number.isFinite(waitOptions.promptIndex) ? waitOptions.promptIndex : null;
     const sharedWaitOptions = waitOptions;
+    let activeImagePrompt = originalPrompt;
     sharedWaitOptions.onLimitRecovered = async () =>
-      runMagicRetry(originalPrompt, {
+      runInChatLimitRecovery(activeImagePrompt, {
         arrayRunController,
         outputTarget,
         promptIndex
@@ -3400,6 +3442,7 @@
               outputTarget,
               promptIndex
             });
+            activeImagePrompt = originalPrompt;
             previousButtons = retryResult.previousButtons;
             waitOptions.assistantTurnCount = retryResult.assistantTurnCount;
             retryCount = nextRetryNumber;
@@ -3453,6 +3496,7 @@
             continue;
           }
 
+          activeImagePrompt = retryPrompt;
           waitOptions.assistantTurnCount = getAssistantTurnElements().length;
           retryCount = nextRetryNumber;
           console.log("[image-retry] Retry step sent; returning to image wait loop.", {
