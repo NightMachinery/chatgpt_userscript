@@ -291,7 +291,7 @@ Current implementation looks for assistant text that:
 - includes parseable time units like hours / minutes / seconds
 
 When detected, the script logs the message, waits for the parsed duration plus a one-minute buffer, logs progress roughly once per minute, and then resumes.
-After that wait, the current behavior is to stay in the same chat and resend the active image-producing prompt (the original prompt, or the latest retry prompt with `image_expected_p !== false`). This preserves context from non-image retry steps such as assistant-written safe prompt rewrites.
+After that wait, recovery opens a fresh chat unless doing so would break continuity for a retry that depends on current-chat context. See `docs/basic/image_gen_limits.md`.
 For manual debugging, `window.waitForImageGenerationLimitReset(previousAssistantTurnCount=0)` is exported.
 
 ## Download Smoke Test Snippet
