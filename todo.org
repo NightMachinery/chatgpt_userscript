@@ -1,5 +1,7 @@
 #+TITLE: chatgpt_userscript/todo
 
+* basic.js: after sending a retry prompt, how much do we sleep? What constant controls this? I want to increase this to 10 seconds.
+
 * DONE fix user interaction required for opening save-directory dialogue
 #+begin_example
 userscript.html?name=ChatGPT-Message-Helper.user.js&id=0436d2d0-523b-47e2-a4e7-2ad4bfae1e52:2084 Uncaught (in promise) Error: Output directory picker was blocked. Call the helper from a user interaction and try again.

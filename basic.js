@@ -1,17 +1,18 @@
 // ==UserScript==
 // @name         ChatGPT Message Helper
 // @namespace    https://chatgpt.com/
-// @version      1.1.49
+// @version      1.1.50
 // @description  Reliable message sending helpers for ChatGPT web UI changes.
 // @match        https://chatgpt.com/*
 // @grant        none
 // ==/UserScript==
 
 (function () {
-  const USERSCRIPT_VERSION = "1.1.49";
+  const USERSCRIPT_VERSION = "1.1.50";
   const IMAGE_DOWNLOAD_TIMEOUT_SECONDS = 500;
   const IMAGE_DOWNLOAD_TIMEOUT_ERROR_MESSAGE = "Timed out waiting for a new visible generated image.";
   const IMAGE_RETRY_BUTTON_COUNT = 3;
+  const IMAGE_RETRY_PROMPT_SEND_SLEEP_MS = 10000;
   const ENABLE_IMAGE_REFUSAL_FAST_RETRY = true;
   const IMAGE_POST_DETECTION_SETTLE_MS = 90000;
   const GENERATED_IMAGE_TARGET_SELECTORS = Object.freeze([
@@ -3525,7 +3526,7 @@
           await sendMessage(
             retryPrompt,
             undefined,
-            undefined,
+            IMAGE_RETRY_PROMPT_SEND_SLEEP_MS,
             IMAGE_DOWNLOAD_TIMEOUT_SECONDS,
             {
               arrayRunController,

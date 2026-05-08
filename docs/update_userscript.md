@@ -172,23 +172,24 @@ When `mode === "new_chat_image"` in repeated send helpers, current flow is:
 7. otherwise, if the image wait times out, run the next retry step
 8. retry steps can be normal prompts or the special sentinel `MAGIC_RETRY`
 9. `MAGIC_RETRY` means: open a new chat and resend the original prompt
-10. the default retry queue is `MAGIC_RETRY`, then the creative-license guidance prompt, then `"Generate!"`
-11. fetch the generated image asset URL(s) directly from the visible image tile(s) and trigger downloads
-12. if download acquisition fails after the image is already visible, keep retrying that same image forever with backoff and a 45-second per-attempt timeout; do not regenerate a fresh image just because download fetches are flaky
-13. if the retry queue is exhausted without a visible image, let the image timeout bubble out; only UI/page-level failures should loop indefinitely
-14. `openNewChat()` is now a recovery loop, not a one-shot shortcut:
+10. normal retry prompt sends wait `IMAGE_RETRY_PROMPT_SEND_SLEEP_MS` (default 10 seconds) once the send button is ready before clicking send
+11. the default retry queue is `MAGIC_RETRY`, then the creative-license guidance prompt, then `"Generate!"`
+12. fetch the generated image asset URL(s) directly from the visible image tile(s) and trigger downloads
+13. if download acquisition fails after the image is already visible, keep retrying that same image forever with backoff and a 45-second per-attempt timeout; do not regenerate a fresh image just because download fetches are flaky
+14. if the retry queue is exhausted without a visible image, let the image timeout bubble out; only UI/page-level failures should loop indefinitely
+15. `openNewChat()` is now a recovery loop, not a one-shot shortcut:
     - resolve visible dialogs with a conservative allowlist
     - click a visible `New chat` control when available
     - fall back to `fireShortcut("o", "KeyO", { shift: true })`
     - only return once a fresh-chat-ready surface is visible
     - after it first looks fresh, wait `NEW_CHAT_POST_OPEN_VERIFICATION_DELAY_MS` (default 3 seconds) and confirm there are still no visible previous messages; otherwise retry the recovery loop
-15. if composer/send readiness gets stuck, recover in-page forever (unless `skipCurrentPrompt()` is used) instead of throwing a fatal timeout
+16. if composer/send readiness gets stuck, recover in-page forever (unless `skipCurrentPrompt()` is used) instead of throwing a fatal timeout
 
 If this breaks, inspect the generated-image tile selector, the asset URL extraction, and the shortcut dispatch behavior.
 Also inspect the refusal matchers (`IMAGE_REFUSAL_TEXT_PATTERNS`) and the composer-ready gate if retries stop firing immediately after recognizable refusals.
 For the current failure UI, prefer detecting the latest assistant turn text plus an in-turn `Try again` button instead of a page-global retry/regenerate search.
 
-Retry prompts reuse `sendMessage(...)`, so each one waits for the composer/send button instead of requiring immediate sendability at the exact timeout moment.
+Retry prompts reuse `sendMessage(...)`, so each one waits for the composer/send button instead of requiring immediate sendability at the exact timeout moment. Normal retry prompt sends pass `IMAGE_RETRY_PROMPT_SEND_SLEEP_MS` as the `sendMessage` sleep argument.
 `MAGIC_RETRY` uses `openNewChat()` plus the original prompt instead of a follow-up message in the same chat.
 
 ## Array Selection Semantics
