@@ -1,14 +1,14 @@
 // ==UserScript==
 // @name         ChatGPT Message Helper
 // @namespace    https://chatgpt.com/
-// @version      1.1.52
+// @version      1.1.53
 // @description  Reliable message sending helpers for ChatGPT web UI changes.
 // @match        https://chatgpt.com/*
 // @grant        none
 // ==/UserScript==
 
 (function () {
-  const USERSCRIPT_VERSION = "1.1.52";
+  const USERSCRIPT_VERSION = "1.1.53";
   const IMAGE_DOWNLOAD_TIMEOUT_SECONDS = 500;
   const IMAGE_DOWNLOAD_TIMEOUT_ERROR_MESSAGE = "Timed out waiting for a new visible generated image.";
   const IMAGE_RETRY_BUTTON_COUNT = 3;
@@ -238,6 +238,32 @@
       transaction.onabort = () => {
         db.close();
         reject(transaction.error || new Error("Resume state clear aborted."));
+      };
+    });
+  }
+
+  async function clearArrayRunResumeStore() {
+    const db = await openArrayRunResumeDb();
+    await new Promise((resolve, reject) => {
+      const transaction = db.transaction(ARRAY_RUN_RESUME_STORE_NAME, "readwrite");
+      try {
+        transaction.objectStore(ARRAY_RUN_RESUME_STORE_NAME).clear();
+      } catch (error) {
+        db.close();
+        reject(error);
+        return;
+      }
+      transaction.oncomplete = () => {
+        db.close();
+        resolve();
+      };
+      transaction.onerror = () => {
+        db.close();
+        reject(transaction.error || new Error("Failed to clear saved state."));
+      };
+      transaction.onabort = () => {
+        db.close();
+        reject(transaction.error || new Error("Saved state clear aborted."));
       };
     });
   }
@@ -3622,6 +3648,8 @@
           ? Math.max(0, Math.trunc(details.initialImageRetryCount))
           : 0,
       runConfig: {
+        promptSourceName: config.promptSourceName || null,
+        promptSourceKind: config.promptSourceKind || null,
         selectedEntries: config.selectedEntries,
         sleepSeconds: config.sleepSeconds,
         sendMode: config.sendMode,
@@ -3665,6 +3693,72 @@
     console.log("[resume] Cleared saved array-run resume state.");
     return {
       ok: true
+    };
+  }
+
+  function summarizeSavedStateForLog(record) {
+    if (!record || !record.runConfig) {
+      return {
+        hasSavedState: false,
+        lastActivePromptFile: null,
+        lastActiveOutputDir: null,
+        lastProgress: null
+      };
+    }
+
+    const runConfig = record.runConfig;
+    const selectedEntries = Array.isArray(runConfig.selectedEntries)
+      ? runConfig.selectedEntries
+      : [];
+    const selectedEntryIndex = Number.isFinite(record.selectedEntryIndex)
+      ? Math.max(0, Math.trunc(record.selectedEntryIndex))
+      : 0;
+    const totalSelected = selectedEntries.length;
+    const activeEntry = selectedEntries[selectedEntryIndex] || null;
+    const outputDirectoryHandle = runConfig.outputDirectoryHandle || null;
+    const lastActiveOutputDir = runConfig.pickOutputDir
+      ? outputDirectoryHandle && outputDirectoryHandle.name
+        ? outputDirectoryHandle.name
+        : "selected folder (handle not stored or unavailable)"
+      : "browser download location";
+
+    return {
+      hasSavedState: true,
+      savedReason: record.reason || "",
+      savedAt: record.updatedAt ? new Date(record.updatedAt).toISOString() : null,
+      lastActivePromptFile:
+        runConfig.promptSourceName ||
+        (runConfig.promptSourceKind === "inline" ? "inline prompt argument" : "unknown"),
+      lastActiveOutputDir,
+      lastProgress: {
+        selectionPosition: totalSelected > 0 ? Math.min(selectedEntryIndex + 1, totalSelected) : 0,
+        totalSelected,
+        selectedEntryIndex,
+        absolutePromptIndex:
+          Number.isFinite(record.currentAbsoluteIndex)
+            ? record.currentAbsoluteIndex
+            : activeEntry && Number.isFinite(activeEntry.absoluteIndex)
+              ? activeEntry.absoluteIndex
+              : null,
+        currentPromptSent: Boolean(record.currentPromptSent),
+        initialImageRetryCount:
+          Number.isFinite(record.initialImageRetryCount) ? record.initialImageRetryCount : 0,
+        currentPromptPreview: summarizePromptForLog(record.currentPrompt || "", 160)
+      }
+    };
+  }
+
+  async function clearState() {
+    const resumeRecord = await readArrayRunResumeRecord();
+    const summary = summarizeSavedStateForLog(resumeRecord);
+    console.log("[state] Clearing saved userscript state.", summary);
+    await clearArrayRunResumeStore();
+    return {
+      ok: true,
+      cleared: {
+        arrayRunResume: Boolean(resumeRecord)
+      },
+      summary
     };
   }
 
@@ -4757,6 +4851,14 @@
     }));
 
     await runPreparedArrayRun({
+      promptSourceKind:
+        normalizedArgs.options && normalizedArgs.options.promptSourceKind
+          ? String(normalizedArgs.options.promptSourceKind)
+          : "inline",
+      promptSourceName:
+        normalizedArgs.options && normalizedArgs.options.promptSourceName
+          ? String(normalizedArgs.options.promptSourceName)
+          : null,
       selectedEntries,
       sleepSeconds,
       prefixText,
@@ -4834,7 +4936,10 @@
 
         try {
           const text = await file.text();
-          settleResolve(text);
+          settleResolve({
+            text,
+            fileName: file.name || null
+          });
         } catch (error) {
           settleReject(error);
         }
@@ -4885,7 +4990,14 @@
     legacy_pick_output_dir,
     options
   ) {
-    const fileText = await chooseFileAsText();
+    const promptFile = await chooseFileAsText();
+    const fileText = promptFile && typeof promptFile === "object" && "text" in promptFile
+      ? promptFile.text
+      : String(promptFile ?? "");
+    const promptSourceName =
+      promptFile && typeof promptFile === "object" && promptFile.fileName
+        ? String(promptFile.fileName)
+        : null;
     const normalizedCallArgs = normalizeArraySelectionCallArguments(
       selection,
       mode,
@@ -4911,7 +5023,9 @@
       {
         ...normalizedArgs.options,
         continueOnImageDownloadTimeout: sendMode === SEND_MODES.NEW_CHAT_IMAGE,
-        skipWhitespaceOnlyMessages: true
+        skipWhitespaceOnlyMessages: true,
+        promptSourceKind: "file",
+        promptSourceName
       }
     );
   }
@@ -4982,6 +5096,7 @@
   window.reloadAndResume = refreshPageAndResume;
   window.getArrayRunResumeState = getArrayRunResumeState;
   window.clearArrayRunResumeState = clearArrayRunResumeState;
+  window.clearState = clearState;
   window.clickDallEDownloadButtons = clickDallEDownloadButtons;
   window.waitForImageGenerationLimitReset = waitForImageGenerationLimitReset;
   window.MAGIC_RETRY = MAGIC_RETRY_PROMPT;

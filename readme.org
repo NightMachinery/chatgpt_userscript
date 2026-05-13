@@ -30,6 +30,7 @@ The script exposes helpers on =window=:
 - =refreshPageAndResume()= / =reloadAndResume()=
 - =getArrayRunResumeState()=
 - =clearArrayRunResumeState()=
+- =clearState()=
 - =clickDallEDownloadButtons(pick_output_dir)=
 - =waitForImageGenerationLimitReset(previousAssistantTurnCount=0)=
 - =MAGIC_RETRY=
@@ -46,6 +47,7 @@ skipCurrentPrompt();
 refreshPageAndResume();
 getArrayRunResumeState();
 clearArrayRunResumeState();
+clearState();
 clickDallEDownloadButtons();
 waitForImageGenerationLimitReset();
 #+end_src
@@ -62,6 +64,7 @@ waitForImageGenerationLimitReset();
 - =MAGIC_REFRESH_RETRY= means: save the active array-run state to IndexedDB, reload the ChatGPT page, then let the newly injected userscript auto-resume by opening a fresh chat and resending the active image prompt. The refresh retry step is marked consumed before reload so a post-reload failure advances to the next retry step instead of refreshing forever.
 - =refreshPageAndResume()= is a manual recovery command for active =sendMessageRepeatedlyArray(...)= / =sendMessageRepeatedlyArrayChooseFile(...)= runs. It saves the active prompt and selected prompt list, reloads the page, then auto-resumes from that prompt. The old console Promise is lost across page navigation, but the new userscript instance continues the run.
 - Resume state is stored in IndexedDB for =https://chatgpt.com=, not in =localStorage=. Use =getArrayRunResumeState()= to inspect it and =clearArrayRunResumeState()= to cancel a stale pending resume.
+- =clearState()= clears all saved userscript state and logs the last active prompt file, output directory, and progress from the saved resume record before deleting it.
 - If picked-folder output was used, the script tries to persist and reuse the File System Access directory handle. If the browser drops permission or cannot restore the handle, resume asks for the output folder again.
 - In =new_chat_image= mode, if ChatGPT replies with an image-limit reset message like =You can create more images when the limit resets in ...=, the script treats that as a special case, waits through the reset window, then retries by opening a new chat and resending the original prompt instead of consuming the fallback retry queue.
 - The in-turn =Image generation failed= retry-button pass is controlled by top-level constant =IMAGE_RETRY_BUTTON_COUNT= (default: =3=).

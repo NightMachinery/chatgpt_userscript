@@ -17,6 +17,7 @@ Keep these APIs working:
 - `refreshPageAndResume()` / `reloadAndResume()`
 - `getArrayRunResumeState()`
 - `clearArrayRunResumeState()`
+- `clearState()`
 - `clickDallEDownloadButtons(pick_output_dir)`
 
 Required call style to preserve:

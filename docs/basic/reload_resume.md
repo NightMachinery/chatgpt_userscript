@@ -16,6 +16,8 @@ that record and restarts the array runner from the active selected prompt.
 - `getArrayRunResumeState()`: inspect the saved resume record.
 - `clearArrayRunResumeState()`: delete the saved resume record and prevent
   auto-resume.
+- `clearState()`: print the saved prompt file, output directory, and progress
+  summary, then clear all saved userscript state.
 - `MAGIC_REFRESH_RETRY`: retry-queue sentinel that saves state, reloads, and
   resumes by redoing the active image prompt in a fresh chat.
 
@@ -33,8 +35,8 @@ that record and restarts the array runner from the active selected prompt.
 ## Stored State
 
 The resume record stores the selected prompt list after prefix/postfix expansion,
-the selected-entry cursor, send mode, sleep duration, retry options, output mode,
-and the active prompt metadata.
+the prompt source file name when available, the selected-entry cursor, send mode,
+sleep duration, retry options, output mode, and the active prompt metadata.
 
 For `pick_output_dir=true`, the script tries to store the File System Access
 directory handle in IndexedDB. If the browser cannot clone the handle or the
