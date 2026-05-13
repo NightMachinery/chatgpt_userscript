@@ -6,13 +6,15 @@ run.
 
 The running JavaScript stack cannot survive `window.location.reload()`. Before
 reloading, the userscript stores a resume record in IndexedDB for the
-`https://chatgpt.com` origin. When the userscript is injected again, it reads
-that record and restarts the array runner from the active selected prompt.
+`https://chatgpt.com` origin. IndexedDB is shared across ChatGPT tabs, so startup
+auto-resume is gated by the tab-local `#auto_resume` URL hash.
 
 ## Console API
 
+- `chatResume()`: manually resume the saved array run from the current tab,
+  regardless of whether the URL currently has `#auto_resume`.
 - `refreshPageAndResume()` / `reloadAndResume()`: save the active array run,
-  reload the page, then auto-resume after injection.
+  add `#auto_resume`, reload the page, then auto-resume after injection.
 - `getArrayRunResumeState()`: inspect the saved resume record.
 - `clearArrayRunResumeState()`: delete the saved resume record and prevent
   auto-resume.
@@ -25,6 +27,12 @@ that record and restarts the array runner from the active selected prompt.
 
 - The active prompt policy is `redo_active`: after reload, `new_chat_image` mode
   opens a fresh chat and resends the active prompt.
+- Normal ChatGPT tabs do not auto-resume even if saved state exists. Auto-resume
+  happens only when the URL hash includes `auto_resume`, or when `chatResume()`
+  is called manually.
+- Active array runs add `#auto_resume` to the current tab so manual refreshes of
+  that tab resume automatically. Normal completion and state-clearing helpers
+  remove the hash.
 - Completed runs clear their resume record.
 - `MAGIC_REFRESH_RETRY` is marked consumed before reload. If the post-reload
   attempt also fails, the retry loop continues with the next retry prompt instead

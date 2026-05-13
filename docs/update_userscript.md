@@ -14,6 +14,7 @@ Keep these APIs working:
   - Also accepts an options object in the final slot (or instead of `pick_output_dir`) for behaviors like `imageRetryPrompts`.
 - `openNewChat()`
 - `skipCurrentPrompt()`
+- `chatResume()`
 - `refreshPageAndResume()` / `reloadAndResume()`
 - `getArrayRunResumeState()`
 - `clearArrayRunResumeState()`
@@ -176,7 +177,7 @@ When `mode === "new_chat_image"` in repeated send helpers, current flow is:
 7. otherwise, if the image wait times out, run the next retry step
 8. retry steps can be normal prompts or the special sentinels `MAGIC_RETRY` / `MAGIC_REFRESH_RETRY`
 9. `MAGIC_RETRY` means: open a new chat and resend the original prompt
-10. `MAGIC_REFRESH_RETRY` means: save active array-run state to IndexedDB, reload the page, and let startup auto-resume by opening a fresh chat and resending the active prompt
+10. `MAGIC_REFRESH_RETRY` means: save active array-run state to IndexedDB, add `#auto_resume`, reload the page, and let startup auto-resume by opening a fresh chat and resending the active prompt
 11. normal retry prompt sends wait `IMAGE_RETRY_PROMPT_SEND_SLEEP_MS` (default 10 seconds) once the send button is ready before clicking send
 12. the default retry queue is `MAGIC_RETRY`, then the creative-license guidance prompt, then `"Generate!"`
 13. fetch the generated image asset URL(s) directly from the visible image tile(s) and trigger downloads

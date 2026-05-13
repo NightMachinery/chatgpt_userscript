@@ -27,6 +27,7 @@ The script exposes helpers on =window=:
 - =sendMessageRepeatedlyArrayChooseFile(sleep, sep, prefix, postfix, selection, mode, pick_output_dir)=
 - =openNewChat()=
 - =skipCurrentPrompt()=
+- =chatResume()=
 - =refreshPageAndResume()= / =reloadAndResume()=
 - =getArrayRunResumeState()=
 - =clearArrayRunResumeState()=
@@ -44,6 +45,7 @@ sendMessageRepeatedlyArrayChooseFile(sleep=10, sep="\n", prefix="", postfix="", 
 sendMessageRepeatedlyArrayChooseFile(sleep=10, sep="\n", prefix="", postfix="", selection="4..10, 12, 20..", mode="new_chat_image", pick_output_dir=true);
 sendMessageRepeatedlyArrayChooseFile(sleep=10, sep="\n", prefix="", postfix="", selection=[4, 5, 6, 12, -1], mode="new_chat_image", { imageRetryPrompts: [MAGIC_REFRESH_RETRY, MAGIC_RETRY, { prompt: "First rewrite the prompt and put it in a markdown code block.", image_expected_p: false }, "Generate using the new safe prompt!"] });
 skipCurrentPrompt();
+chatResume();
 refreshPageAndResume();
 getArrayRunResumeState();
 clearArrayRunResumeState();
@@ -61,9 +63,9 @@ waitForImageGenerationLimitReset();
 - =skipCurrentPrompt()= works during active array runs only (=sendMessageRepeatedlyArray(...)= / =sendMessageRepeatedlyArrayChooseFile(...)=). It cooperatively skips the current prompt at the next safe checkpoint and advances to the next selected prompt.
 - If =skipCurrentPrompt()= is used while a generated image is stuck in download-retry, the script saves a small diagnostic text file (prompt, prompt index, image index, asset URL, last error, retry count) before advancing.
 - =MAGIC_RETRY= means: open a new chat and resend the original image prompt.
-- =MAGIC_REFRESH_RETRY= means: save the active array-run state to IndexedDB, reload the ChatGPT page, then let the newly injected userscript auto-resume by opening a fresh chat and resending the active image prompt. The refresh retry step is marked consumed before reload so a post-reload failure advances to the next retry step instead of refreshing forever.
-- =refreshPageAndResume()= is a manual recovery command for active =sendMessageRepeatedlyArray(...)= / =sendMessageRepeatedlyArrayChooseFile(...)= runs. It saves the active prompt and selected prompt list, reloads the page, then auto-resumes from that prompt. The old console Promise is lost across page navigation, but the new userscript instance continues the run.
-- Resume state is stored in IndexedDB for =https://chatgpt.com=, not in =localStorage=. Use =getArrayRunResumeState()= to inspect it and =clearArrayRunResumeState()= to cancel a stale pending resume.
+- =MAGIC_REFRESH_RETRY= means: save the active array-run state to IndexedDB, add =#auto_resume= to the current tab URL, reload the ChatGPT page, then let the newly injected userscript auto-resume by opening a fresh chat and resending the active image prompt. The refresh retry step is marked consumed before reload so a post-reload failure advances to the next retry step instead of refreshing forever.
+- =refreshPageAndResume()= is a manual recovery command for active =sendMessageRepeatedlyArray(...)= / =sendMessageRepeatedlyArrayChooseFile(...)= runs. It saves the active prompt and selected prompt list, adds =#auto_resume= to the current tab URL, reloads the page, then auto-resumes from that prompt. The old console Promise is lost across page navigation, but the new userscript instance continues the run.
+- Resume state is stored in IndexedDB for =https://chatgpt.com=, not in =localStorage=. A normal ChatGPT tab will not resume just because saved state exists; auto-resume requires =#auto_resume= in that tab's URL. Use =chatResume()= to manually resume from any tab, =getArrayRunResumeState()= to inspect state, and =clearArrayRunResumeState()= to cancel a stale pending resume.
 - =clearState()= clears all saved userscript state and logs the last active prompt file, output directory, and progress from the saved resume record before deleting it.
 - If picked-folder output was used, the script tries to persist and reuse the File System Access directory handle. If the browser drops permission or cannot restore the handle, resume asks for the output folder again.
 - In =new_chat_image= mode, if ChatGPT replies with an image-limit reset message like =You can create more images when the limit resets in ...=, the script treats that as a special case, waits through the reset window, then retries by opening a new chat and resending the original prompt instead of consuming the fallback retry queue.

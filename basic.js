@@ -1,14 +1,14 @@
 // ==UserScript==
 // @name         ChatGPT Message Helper
 // @namespace    https://chatgpt.com/
-// @version      1.1.53
+// @version      1.1.54
 // @description  Reliable message sending helpers for ChatGPT web UI changes.
 // @match        https://chatgpt.com/*
 // @grant        none
 // ==/UserScript==
 
 (function () {
-  const USERSCRIPT_VERSION = "1.1.53";
+  const USERSCRIPT_VERSION = "1.1.54";
   const IMAGE_DOWNLOAD_TIMEOUT_SECONDS = 500;
   const IMAGE_DOWNLOAD_TIMEOUT_ERROR_MESSAGE = "Timed out waiting for a new visible generated image.";
   const IMAGE_RETRY_BUTTON_COUNT = 3;
@@ -69,6 +69,7 @@
   const ARRAY_RUN_RESUME_DB_VERSION = 1;
   const ARRAY_RUN_RESUME_STORE_NAME = "state";
   const ARRAY_RUN_RESUME_RECORD_KEY = "active-array-run";
+  const AUTO_RESUME_HASH_TOKEN = "auto_resume";
   const DEFAULT_IMAGE_RETRY_PROMPTS = Object.freeze([
     MAGIC_RETRY_PROMPT,
     MAGIC_REFRESH_RETRY_PROMPT,
@@ -143,6 +144,51 @@
   let activeArrayRunController = null;
   let nextArrayRunId = 1;
   let arrayRunAutoResumeStarted = false;
+
+  function getCurrentHashTokens() {
+    const rawHash = String(window.location.hash || "").replace(/^#/, "");
+    if (rawHash.length === 0) {
+      return [];
+    }
+    return rawHash
+      .split(/[&,\s]+/)
+      .map((token) => token.trim())
+      .filter(Boolean);
+  }
+
+  function hasAutoResumeHash() {
+    return getCurrentHashTokens().some((token) => token.toLowerCase() === AUTO_RESUME_HASH_TOKEN);
+  }
+
+  function replaceCurrentHashTokens(tokens) {
+    const normalizedTokens = Array.from(new Set(
+      (Array.isArray(tokens) ? tokens : [])
+        .map((token) => String(token || "").trim())
+        .filter(Boolean)
+    ));
+    const url = new URL(window.location.href);
+    url.hash = normalizedTokens.length > 0 ? normalizedTokens.join("&") : "";
+    try {
+      window.history.replaceState(window.history.state, document.title, url.href);
+    } catch (_) {
+      window.location.hash = url.hash;
+    }
+  }
+
+  function addAutoResumeHash() {
+    const tokens = getCurrentHashTokens();
+    if (!tokens.some((token) => token.toLowerCase() === AUTO_RESUME_HASH_TOKEN)) {
+      tokens.push(AUTO_RESUME_HASH_TOKEN);
+      replaceCurrentHashTokens(tokens);
+    }
+  }
+
+  function removeAutoResumeHash() {
+    const tokens = getCurrentHashTokens().filter(
+      (token) => token.toLowerCase() !== AUTO_RESUME_HASH_TOKEN
+    );
+    replaceCurrentHashTokens(tokens);
+  }
 
   function openArrayRunResumeDb() {
     return new Promise((resolve, reject) => {
@@ -3690,6 +3736,7 @@
 
   async function clearArrayRunResumeState() {
     await deleteArrayRunResumeRecord();
+    removeAutoResumeHash();
     console.log("[resume] Cleared saved array-run resume state.");
     return {
       ok: true
@@ -3753,6 +3800,7 @@
     const summary = summarizeSavedStateForLog(resumeRecord);
     console.log("[state] Clearing saved userscript state.", summary);
     await clearArrayRunResumeStore();
+    removeAutoResumeHash();
     return {
       ok: true,
       cleared: {
@@ -3784,6 +3832,7 @@
           ? details.initialImageRetryCount
           : 0
     });
+    addAutoResumeHash();
     console.warn(`[resume] Saved array-run state for ${reason}; reloading the page now.`);
     window.location.reload();
     await new Promise(() => {});
@@ -4598,6 +4647,7 @@
     if (selectedEntries.length === 0 || startSelectedEntryIndex >= selectedEntries.length) {
       console.log("[resume] No remaining selected prompts to send.");
       await discardArrayRunResumeRecord();
+      removeAutoResumeHash();
       return;
     }
     if (activeArrayRunController && activeArrayRunController.active) {
@@ -4632,6 +4682,7 @@
     activeArrayRunController = arrayRunController;
 
     try {
+      addAutoResumeHash();
       await saveArrayRunResumeCheckpoint(runConfig, arrayRunController, {
         reason: isAutoResume ? "auto_resume_started" : "array_run_started",
         selectedEntryIndex: startSelectedEntryIndex,
@@ -4788,6 +4839,7 @@
         }
       }
       await discardArrayRunResumeRecord();
+      removeAutoResumeHash();
     } finally {
       finalizeArrayRunController(arrayRunController);
     }
@@ -5041,14 +5093,20 @@
     });
   }
 
-  async function autoResumeArrayRunOnStartup() {
+  async function resumeArrayRunFromRecord(record, resumeSource) {
     if (arrayRunAutoResumeStarted) {
-      return;
+      return {
+        ok: false,
+        reason: "resume_already_started"
+      };
     }
 
-    const record = await readArrayRunResumeRecord();
     if (!record || record.status !== "pending" || !record.runConfig) {
-      return;
+      console.log("[resume] No pending array-run state to resume.");
+      return {
+        ok: false,
+        reason: "no_pending_resume_state"
+      };
     }
 
     arrayRunAutoResumeStarted = true;
@@ -5058,7 +5116,8 @@
     const initialImageRetryCount = Number.isFinite(record.initialImageRetryCount)
       ? Math.max(0, Math.trunc(record.initialImageRetryCount))
       : 0;
-    console.warn("[resume] Found saved array-run state. Auto-resuming after page load.", {
+    console.warn("[resume] Found saved array-run state. Resuming now.", {
+      resumeSource: resumeSource || "unknown",
       reason: record.reason || "",
       selectedEntryIndex,
       currentAbsoluteIndex: record.currentAbsoluteIndex,
@@ -5072,9 +5131,55 @@
         startSelectedEntryIndex: selectedEntryIndex,
         initialImageRetryCount
       });
+      return {
+        ok: true
+      };
     } catch (error) {
       console.error(`[resume] Auto-resume failed: ${formatErrorForLog(error)}`, error);
       arrayRunAutoResumeStarted = false;
+      throw error;
+    }
+  }
+
+  async function chatResume() {
+    if (activeArrayRunController && activeArrayRunController.active) {
+      throw new Error("An array prompt run is already active; cannot resume another run.");
+    }
+
+    const record = await readArrayRunResumeRecord();
+    if (!record || record.status !== "pending" || !record.runConfig) {
+      console.log("[resume] No pending array-run state to resume.");
+      return {
+        ok: false,
+        reason: "no_pending_resume_state"
+      };
+    }
+
+    addAutoResumeHash();
+    return resumeArrayRunFromRecord(record, "manual_chat_resume");
+  }
+
+  async function autoResumeArrayRunOnStartup() {
+    const record = await readArrayRunResumeRecord();
+    if (!record || record.status !== "pending" || !record.runConfig) {
+      if (hasAutoResumeHash()) {
+        removeAutoResumeHash();
+      }
+      return;
+    }
+
+    if (!hasAutoResumeHash()) {
+      console.warn(
+        "[resume] Saved array-run state exists, but this tab does not have #auto_resume. " +
+          "Not auto-resuming; call chatResume() to resume manually."
+      );
+      return;
+    }
+
+    try {
+      await resumeArrayRunFromRecord(record, "hash_auto_resume");
+    } catch (_) {
+      // resumeArrayRunFromRecord already logged the failure.
     }
   }
 
@@ -5092,6 +5197,7 @@
   window.sendMessageRepeatedlyArray = sendMessageRepeatedlyArray;
   window.sendMessageRepeatedlyArrayChooseFile = sendMessageRepeatedlyArrayChooseFile;
   window.skipCurrentPrompt = requestSkipCurrentPrompt;
+  window.chatResume = chatResume;
   window.refreshPageAndResume = refreshPageAndResume;
   window.reloadAndResume = refreshPageAndResume;
   window.getArrayRunResumeState = getArrayRunResumeState;
