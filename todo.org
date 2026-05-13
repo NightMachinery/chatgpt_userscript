@@ -1,6 +1,6 @@
 #+TITLE: chatgpt_userscript/todo
 
-* basic.js: because we now auto-resume on site load, it's no longer possible to use the site normally in another tab. Can add sth like `#auto_resume` to the URL when we want auto-resume to happen, and also a function `chatResume()` for manual invocation, such that normal opening of the site does not trigger the auto-resume? What suggestions and thoughts do you have?
+* DONE basic.js: because we now auto-resume on site load, it's no longer possible to use the site normally in another tab. Can add sth like =#auto_resume= to the URL when we want auto-resume to happen, and also a function =chatResume()= for manual invocation, such that normal opening of the site does not trigger the auto-resume? What suggestions and thoughts do you have?
 
 * DONE _
 #+BEGIN_SRC markdown
