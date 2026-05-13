@@ -1,6 +1,13 @@
 #+TITLE: chatgpt_userscript/todo
 
-* basic.js: after sending a retry prompt, how much do we sleep? What constant controls this? I want to increase this to 10 seconds.
+* _
+#+BEGIN_SRC markdown
+```speech-to-text
+In basic.js file, when the long running, you know, a prompt, we give it an array and it keeps sending each prompt in a loop, it's a long operation, okay? So sometimes there are network errors and the page gets stuck in, you know, it gets somewhat stuck. And then from that point onwards, no images get loaded, even though the site is actually generating the image, the image don't load. What can we do to mitigate this stuck state that happens because of network errors? It can be solved by refreshing the page, but if I refresh the page because the code is running as an injected JavaScript, the code also gets reset and I have to resume the code manually from scratch. So I'm thinking, is it possible to define a refresh page function that refreshes the page completely but keeps our code going? And yeah, is that possible? For now, I think we can trigger this refresh function manually if it is possible. But in the future, we could even try it when we detect some network errors.
+```
+#+END_SRC
+
+* DONE basic.js: after sending a retry prompt, how much do we sleep? What constant controls this? I want to increase this to 10 seconds.
 
 * DONE fix user interaction required for opening save-directory dialogue
 #+begin_example
