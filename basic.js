@@ -1,14 +1,14 @@
 // ==UserScript==
 // @name         ChatGPT Message Helper
 // @namespace    https://chatgpt.com/
-// @version      1.1.51
+// @version      1.1.52
 // @description  Reliable message sending helpers for ChatGPT web UI changes.
 // @match        https://chatgpt.com/*
 // @grant        none
 // ==/UserScript==
 
 (function () {
-  const USERSCRIPT_VERSION = "1.1.51";
+  const USERSCRIPT_VERSION = "1.1.52";
   const IMAGE_DOWNLOAD_TIMEOUT_SECONDS = 500;
   const IMAGE_DOWNLOAD_TIMEOUT_ERROR_MESSAGE = "Timed out waiting for a new visible generated image.";
   const IMAGE_RETRY_BUTTON_COUNT = 3;
@@ -3540,6 +3540,17 @@
       : DEFAULT_IMAGE_RETRY_PROMPTS.map((prompt) => normalizeRetryPromptStep(prompt)).filter(Boolean);
   }
 
+  function logImageRetryOptionsForArrayRun(imageRetryPrompts) {
+    if (imageRetryPrompts === undefined) {
+      console.log("[image-retry] Using default retry options.");
+      return;
+    }
+
+    console.log("[image-retry] Using custom retry options.", {
+      imageRetryPrompts: normalizeRetryPrompts(imageRetryPrompts)
+    });
+  }
+
   function normalizeMessageBatch(msgs, separator, options) {
     let messages;
     if (Array.isArray(msgs)) {
@@ -4474,6 +4485,9 @@
     );
     const imageRetryPrompts =
       useNewChat && options ? options.imageRetryPrompts ?? options.retryPrompts : undefined;
+    if (useNewChat) {
+      logImageRetryOptionsForArrayRun(imageRetryPrompts);
+    }
     const startSelectedEntryIndex = Math.max(
       0,
       Math.min(

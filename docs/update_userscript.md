@@ -195,6 +195,7 @@ For the current failure UI, prefer detecting the latest assistant turn text plus
 
 Retry prompts reuse `sendMessage(...)`, so each one waits for the composer/send button instead of requiring immediate sendability at the exact timeout moment. Normal retry prompt sends pass `IMAGE_RETRY_PROMPT_SEND_SLEEP_MS` as the `sendMessage` sleep argument.
 `MAGIC_RETRY` uses `openNewChat()` plus the original prompt instead of a follow-up message in the same chat. `MAGIC_REFRESH_RETRY` saves a resume checkpoint before reload and marks itself consumed so the post-reload retry loop can advance if the resent prompt also fails.
+At the start of a `new_chat_image` array run, the script logs either `[image-retry] Using default retry options.` or the normalized custom `imageRetryPrompts` queue.
 
 ## Array Selection Semantics
 
