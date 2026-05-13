@@ -14,6 +14,9 @@ Keep these APIs working:
   - Also accepts an options object in the final slot (or instead of `pick_output_dir`) for behaviors like `imageRetryPrompts`.
 - `openNewChat()`
 - `skipCurrentPrompt()`
+- `refreshPageAndResume()` / `reloadAndResume()`
+- `getArrayRunResumeState()`
+- `clearArrayRunResumeState()`
 - `clickDallEDownloadButtons(pick_output_dir)`
 
 Required call style to preserve:
@@ -170,27 +173,28 @@ When `mode === "new_chat_image"` in repeated send helpers, current flow is:
 5. if ChatGPT instead replies with an image-limit reset message (`...limit resets in ...`), parse the duration, log the wait, wait through the reset window, then retry by opening a new chat and resending the original prompt
 6. otherwise, if the latest assistant turn is a recognizable refusal and the composer is ready again, immediately run the next retry step (guarded by top-level constant `ENABLE_IMAGE_REFUSAL_FAST_RETRY`)
 7. otherwise, if the image wait times out, run the next retry step
-8. retry steps can be normal prompts or the special sentinel `MAGIC_RETRY`
+8. retry steps can be normal prompts or the special sentinels `MAGIC_RETRY` / `MAGIC_REFRESH_RETRY`
 9. `MAGIC_RETRY` means: open a new chat and resend the original prompt
-10. normal retry prompt sends wait `IMAGE_RETRY_PROMPT_SEND_SLEEP_MS` (default 10 seconds) once the send button is ready before clicking send
-11. the default retry queue is `MAGIC_RETRY`, then the creative-license guidance prompt, then `"Generate!"`
-12. fetch the generated image asset URL(s) directly from the visible image tile(s) and trigger downloads
-13. if download acquisition fails after the image is already visible, keep retrying that same image forever with backoff and a 45-second per-attempt timeout; do not regenerate a fresh image just because download fetches are flaky
-14. if the retry queue is exhausted without a visible image, let the image timeout bubble out; only UI/page-level failures should loop indefinitely
-15. `openNewChat()` is now a recovery loop, not a one-shot shortcut:
+10. `MAGIC_REFRESH_RETRY` means: save active array-run state to IndexedDB, reload the page, and let startup auto-resume by opening a fresh chat and resending the active prompt
+11. normal retry prompt sends wait `IMAGE_RETRY_PROMPT_SEND_SLEEP_MS` (default 10 seconds) once the send button is ready before clicking send
+12. the default retry queue is `MAGIC_RETRY`, then the creative-license guidance prompt, then `"Generate!"`
+13. fetch the generated image asset URL(s) directly from the visible image tile(s) and trigger downloads
+14. if download acquisition fails after the image is already visible, keep retrying that same image forever with backoff and a 45-second per-attempt timeout; do not regenerate a fresh image just because download fetches are flaky
+15. if the retry queue is exhausted without a visible image, let the image timeout bubble out; only UI/page-level failures should loop indefinitely
+16. `openNewChat()` is now a recovery loop, not a one-shot shortcut:
     - resolve visible dialogs with a conservative allowlist
     - click a visible `New chat` control when available
     - fall back to `fireShortcut("o", "KeyO", { shift: true })`
     - only return once a fresh-chat-ready surface is visible
     - after it first looks fresh, wait `NEW_CHAT_POST_OPEN_VERIFICATION_DELAY_MS` (default 3 seconds) and confirm there are still no visible previous messages; otherwise retry the recovery loop
-16. if composer/send readiness gets stuck, recover in-page forever (unless `skipCurrentPrompt()` is used) instead of throwing a fatal timeout
+17. if composer/send readiness gets stuck, recover in-page forever (unless `skipCurrentPrompt()` is used) instead of throwing a fatal timeout
 
 If this breaks, inspect the generated-image tile selector, the asset URL extraction, and the shortcut dispatch behavior.
 Also inspect the refusal matchers (`IMAGE_REFUSAL_TEXT_PATTERNS`) and the composer-ready gate if retries stop firing immediately after recognizable refusals.
 For the current failure UI, prefer detecting the latest assistant turn text plus an in-turn `Try again` button instead of a page-global retry/regenerate search.
 
 Retry prompts reuse `sendMessage(...)`, so each one waits for the composer/send button instead of requiring immediate sendability at the exact timeout moment. Normal retry prompt sends pass `IMAGE_RETRY_PROMPT_SEND_SLEEP_MS` as the `sendMessage` sleep argument.
-`MAGIC_RETRY` uses `openNewChat()` plus the original prompt instead of a follow-up message in the same chat.
+`MAGIC_RETRY` uses `openNewChat()` plus the original prompt instead of a follow-up message in the same chat. `MAGIC_REFRESH_RETRY` saves a resume checkpoint before reload and marks itself consumed so the post-reload retry loop can advance if the resent prompt also fails.
 
 ## Array Selection Semantics
 
@@ -205,7 +209,7 @@ For `sendMessageRepeatedlyArray(...)` and `sendMessageRepeatedlyArrayChooseFile(
 - `sendMessageRepeatedlyArrayChooseFile(...)` skips entries that are only whitespace after splitting by `sep`; `selection` is applied after that filtering.
 - Legacy `from`/`to` array-helper calls now throw a migration error telling the caller to use `selection` instead.
 - In `new_chat_image` mode, both array helpers accept `options.imageRetryPrompts` (alias: `options.retryPrompts`) to override the default retry queue passed into `waitForDownloadButtonVisibleWithRetry(...)`.
-- Retry queue entries may be raw strings / `MAGIC_RETRY`, or objects like `{ prompt: "...", image_expected_p: false }`. `image_expected_p` defaults to `true`; when set to `false`, the step waits only for the composer to become ready for the next input again and then immediately advances to the next retry step without waiting for an image from that step.
+- Retry queue entries may be raw strings / `MAGIC_RETRY` / `MAGIC_REFRESH_RETRY`, or objects like `{ prompt: "...", image_expected_p: false }`. `image_expected_p` defaults to `true`; when set to `false`, the step waits only for the composer to become ready for the next input again and then immediately advances to the next retry step without waiting for an image from that step.
 
 ## Console Skip Command
 

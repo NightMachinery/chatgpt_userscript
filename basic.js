@@ -1,14 +1,14 @@
 // ==UserScript==
 // @name         ChatGPT Message Helper
 // @namespace    https://chatgpt.com/
-// @version      1.1.50
+// @version      1.1.51
 // @description  Reliable message sending helpers for ChatGPT web UI changes.
 // @match        https://chatgpt.com/*
 // @grant        none
 // ==/UserScript==
 
 (function () {
-  const USERSCRIPT_VERSION = "1.1.50";
+  const USERSCRIPT_VERSION = "1.1.51";
   const IMAGE_DOWNLOAD_TIMEOUT_SECONDS = 500;
   const IMAGE_DOWNLOAD_TIMEOUT_ERROR_MESSAGE = "Timed out waiting for a new visible generated image.";
   const IMAGE_RETRY_BUTTON_COUNT = 3;
@@ -64,6 +64,11 @@
     ".avif"
   ]);
   const MAGIC_RETRY_PROMPT = "MAGIC_RETRY";
+  const MAGIC_REFRESH_RETRY_PROMPT = "MAGIC_REFRESH_RETRY";
+  const ARRAY_RUN_RESUME_DB_NAME = "chatgpt-userscript-resume";
+  const ARRAY_RUN_RESUME_DB_VERSION = 1;
+  const ARRAY_RUN_RESUME_STORE_NAME = "state";
+  const ARRAY_RUN_RESUME_RECORD_KEY = "active-array-run";
   const DEFAULT_IMAGE_RETRY_PROMPTS = Object.freeze([
     MAGIC_RETRY_PROMPT,
     MAGIC_RETRY_PROMPT,
@@ -137,6 +142,113 @@
   let downloadRenameInterceptorInstalled = false;
   let activeArrayRunController = null;
   let nextArrayRunId = 1;
+  let arrayRunAutoResumeStarted = false;
+
+  function openArrayRunResumeDb() {
+    return new Promise((resolve, reject) => {
+      if (!window.indexedDB) {
+        reject(new Error("IndexedDB is not available in this browser context."));
+        return;
+      }
+
+      const request = window.indexedDB.open(ARRAY_RUN_RESUME_DB_NAME, ARRAY_RUN_RESUME_DB_VERSION);
+      request.onupgradeneeded = () => {
+        const db = request.result;
+        if (!db.objectStoreNames.contains(ARRAY_RUN_RESUME_STORE_NAME)) {
+          db.createObjectStore(ARRAY_RUN_RESUME_STORE_NAME);
+        }
+      };
+      request.onsuccess = () => resolve(request.result);
+      request.onerror = () => reject(request.error || new Error("Failed to open resume IndexedDB."));
+    });
+  }
+
+  async function readArrayRunResumeRecord() {
+    try {
+      const db = await openArrayRunResumeDb();
+      return await new Promise((resolve, reject) => {
+        const transaction = db.transaction(ARRAY_RUN_RESUME_STORE_NAME, "readonly");
+        const request = transaction.objectStore(ARRAY_RUN_RESUME_STORE_NAME).get(ARRAY_RUN_RESUME_RECORD_KEY);
+        request.onsuccess = () => resolve(request.result || null);
+        request.onerror = () => {
+          db.close();
+          reject(request.error || new Error("Failed to read resume state."));
+        };
+        transaction.oncomplete = () => db.close();
+        transaction.onerror = () => db.close();
+      });
+    } catch (error) {
+      console.warn(`[resume] Failed to read resume state: ${formatErrorForLog(error)}`, error);
+      return null;
+    }
+  }
+
+  async function writeArrayRunResumeRecord(record) {
+    const safeRecord = {
+      ...(record || {}),
+      schemaVersion: 1,
+      userscriptVersion: USERSCRIPT_VERSION,
+      updatedAt: Date.now()
+    };
+    const db = await openArrayRunResumeDb();
+    await new Promise((resolve, reject) => {
+      const transaction = db.transaction(ARRAY_RUN_RESUME_STORE_NAME, "readwrite");
+      try {
+        transaction.objectStore(ARRAY_RUN_RESUME_STORE_NAME).put(safeRecord, ARRAY_RUN_RESUME_RECORD_KEY);
+      } catch (error) {
+        db.close();
+        reject(error);
+        return;
+      }
+      transaction.oncomplete = () => {
+        db.close();
+        resolve();
+      };
+      transaction.onerror = () => {
+        db.close();
+        reject(transaction.error || new Error("Failed to write resume state."));
+      };
+      transaction.onabort = () => {
+        db.close();
+        reject(transaction.error || new Error("Resume state write aborted."));
+      };
+    });
+    return safeRecord;
+  }
+
+  async function deleteArrayRunResumeRecord() {
+    const db = await openArrayRunResumeDb();
+    await new Promise((resolve, reject) => {
+      const transaction = db.transaction(ARRAY_RUN_RESUME_STORE_NAME, "readwrite");
+      try {
+        transaction.objectStore(ARRAY_RUN_RESUME_STORE_NAME).delete(ARRAY_RUN_RESUME_RECORD_KEY);
+      } catch (error) {
+        db.close();
+        reject(error);
+        return;
+      }
+      transaction.oncomplete = () => {
+        db.close();
+        resolve();
+      };
+      transaction.onerror = () => {
+        db.close();
+        reject(transaction.error || new Error("Failed to clear resume state."));
+      };
+      transaction.onabort = () => {
+        db.close();
+        reject(transaction.error || new Error("Resume state clear aborted."));
+      };
+    });
+  }
+
+  async function discardArrayRunResumeRecord() {
+    try {
+      await deleteArrayRunResumeRecord();
+    } catch (error) {
+      console.warn(`[resume] Failed to clear saved resume state: ${formatErrorForLog(error)}`, error);
+    }
+  }
 
   function getMonotonicNowMs() {
     if (
@@ -158,6 +270,8 @@
       active: true,
       useNewChat: Boolean(useNewChat),
       totalSelected: Number.isFinite(totalSelected) ? totalSelected : 0,
+      resumeRecord: null,
+      selectedEntryIndex: 0,
       phase: ARRAY_RUN_PHASES.IDLE,
       skipRequested: false,
       skipRequestedAt: null,
@@ -2384,6 +2498,35 @@
     }
 
     const directoryHandle = baseDirectoryHandle;
+    return createPickedOutputTargetFromHandle(directoryHandle);
+  }
+
+  async function ensureDirectoryHandlePermission(directoryHandle) {
+    if (
+      !directoryHandle ||
+      typeof directoryHandle.queryPermission !== "function" ||
+      typeof directoryHandle.requestPermission !== "function"
+    ) {
+      return true;
+    }
+
+    const descriptor = { mode: "readwrite" };
+    try {
+      if ((await directoryHandle.queryPermission(descriptor)) === "granted") {
+        return true;
+      }
+      return (await directoryHandle.requestPermission(descriptor)) === "granted";
+    } catch (error) {
+      console.warn(`[output] Failed to confirm picked-folder permission: ${formatErrorForLog(error)}`);
+      return false;
+    }
+  }
+
+  async function createPickedOutputTargetFromHandle(directoryHandle) {
+    if (!(await ensureDirectoryHandlePermission(directoryHandle))) {
+      throw createOutputDirectoryError("Picked output directory permission was not granted after reload.");
+    }
+
     const description = "the selected folder";
 
     console.log(`[output] Using ${description} for saved files.`);
@@ -2391,6 +2534,7 @@
     return {
       type: "picked_directory",
       description,
+      directoryHandle,
       async writeBlob(blob, filename) {
         try {
           return await writeBlobToDirectory(directoryHandle, blob, filename);
@@ -3196,9 +3340,13 @@
       return "";
     }
 
-    return /^magic(?:_|\s*)retry$/i.test(normalizedPrompt)
-      ? MAGIC_RETRY_PROMPT
-      : normalizedPrompt;
+    if (/^magic(?:_|\s*)retry$/i.test(normalizedPrompt)) {
+      return MAGIC_RETRY_PROMPT;
+    }
+    if (/^magic(?:_|\s*)refresh(?:_|\s*)retry$/i.test(normalizedPrompt)) {
+      return MAGIC_REFRESH_RETRY_PROMPT;
+    }
+    return normalizedPrompt;
   }
 
   function normalizeRetryPromptStep(step) {
@@ -3230,6 +3378,10 @@
 
   function isMagicRetryPrompt(prompt) {
     return normalizeRetryPromptValue(prompt) === MAGIC_RETRY_PROMPT;
+  }
+
+  function isMagicRefreshRetryPrompt(prompt) {
+    return normalizeRetryPromptValue(prompt) === MAGIC_REFRESH_RETRY_PROMPT;
   }
 
   function captureDownloadTargetKeys() {
@@ -3412,15 +3564,150 @@
     };
   }
 
+  function sanitizeArrayRunOptionsForResume(options) {
+    if (!isPlainObject(options)) {
+      return undefined;
+    }
+
+    const sanitized = {};
+    if (options.continueOnImageDownloadTimeout !== undefined) {
+      sanitized.continueOnImageDownloadTimeout = Boolean(options.continueOnImageDownloadTimeout);
+    }
+    if (options.skipWhitespaceOnlyMessages !== undefined) {
+      sanitized.skipWhitespaceOnlyMessages = Boolean(options.skipWhitespaceOnlyMessages);
+    }
+    const retryPrompts = options.imageRetryPrompts ?? options.retryPrompts;
+    if (retryPrompts !== undefined) {
+      sanitized.imageRetryPrompts = normalizeRetryPrompts(retryPrompts).map((step) => ({
+        prompt: step.prompt,
+        image_expected_p: step.image_expected_p
+      }));
+    }
+    return Object.keys(sanitized).length > 0 ? sanitized : undefined;
+  }
+
+  function buildArrayRunResumeRecord(config, controller, details) {
+    const selectedEntryIndex = Number.isFinite(details && details.selectedEntryIndex)
+      ? details.selectedEntryIndex
+      : Number.isFinite(controller && controller.selectedEntryIndex)
+        ? controller.selectedEntryIndex
+        : 0;
+    const currentEntry = Array.isArray(config.selectedEntries)
+      ? config.selectedEntries[selectedEntryIndex]
+      : null;
+    return {
+      status: "pending",
+      reason: details && details.reason ? String(details.reason) : "array_run_progress",
+      url: String(window.location.href || ""),
+      selectedEntryIndex,
+      activePromptPolicy: "redo_active",
+      currentAbsoluteIndex:
+        currentEntry && Number.isFinite(currentEntry.absoluteIndex) ? currentEntry.absoluteIndex : null,
+      currentPrompt:
+        currentEntry && currentEntry.fullPrompt !== undefined ? String(currentEntry.fullPrompt) : "",
+      currentPromptSent: Boolean(details && details.currentPromptSent),
+      initialImageRetryCount:
+        details && Number.isFinite(details.initialImageRetryCount)
+          ? Math.max(0, Math.trunc(details.initialImageRetryCount))
+          : 0,
+      runConfig: {
+        selectedEntries: config.selectedEntries,
+        sleepSeconds: config.sleepSeconds,
+        sendMode: config.sendMode,
+        useNewChat: config.useNewChat,
+        pickOutputDir: config.pickOutputDir,
+        outputDirectoryHandle: config.outputDirectoryHandle || null,
+        options: sanitizeArrayRunOptionsForResume(config.options)
+      }
+    };
+  }
+
+  async function saveArrayRunResumeCheckpoint(config, controller, details) {
+    if (!controller || !controller.resumeEnabled) {
+      return null;
+    }
+
+    const record = buildArrayRunResumeRecord(config, controller, details);
+    try {
+      controller.resumeRecord = await writeArrayRunResumeRecord(record);
+      return controller.resumeRecord;
+    } catch (error) {
+      if (
+        record.runConfig &&
+        record.runConfig.outputDirectoryHandle &&
+        error &&
+        typeof error === "object" &&
+        (error.name === "DataCloneError" || /clone/i.test(String(error.message || "")))
+      ) {
+        console.warn("[resume] Could not persist the output directory handle; resume will ask for the folder again.");
+        record.runConfig.outputDirectoryHandle = null;
+        controller.resumeRecord = await writeArrayRunResumeRecord(record);
+        return controller.resumeRecord;
+      }
+      console.warn(`[resume] Failed to save array-run checkpoint: ${formatErrorForLog(error)}`, error);
+      return null;
+    }
+  }
+
+  async function clearArrayRunResumeState() {
+    await deleteArrayRunResumeRecord();
+    console.log("[resume] Cleared saved array-run resume state.");
+    return {
+      ok: true
+    };
+  }
+
+  async function getArrayRunResumeState() {
+    return readArrayRunResumeRecord();
+  }
+
+  async function triggerArrayRunReloadResume(reason, details) {
+    const controller = activeArrayRunController;
+    if (!isActiveArrayRunController(controller) || !controller.runConfig) {
+      throw new Error("No active array run is available to resume after reload.");
+    }
+
+    const selectedEntryIndex = Number.isFinite(details && details.selectedEntryIndex)
+      ? details.selectedEntryIndex
+      : controller.selectedEntryIndex;
+    await saveArrayRunResumeCheckpoint(controller.runConfig, controller, {
+      reason,
+      selectedEntryIndex,
+      currentPromptSent: Boolean(controller.currentPromptSent),
+      initialImageRetryCount:
+        details && Number.isFinite(details.initialImageRetryCount)
+          ? details.initialImageRetryCount
+          : 0
+    });
+    console.warn(`[resume] Saved array-run state for ${reason}; reloading the page now.`);
+    window.location.reload();
+    await new Promise(() => {});
+  }
+
+  async function refreshPageAndResume(options) {
+    const activePromptPolicy =
+      options && options.activePromptPolicy !== undefined
+        ? String(options.activePromptPolicy)
+        : "redo_active";
+    if (activePromptPolicy !== "redo_active") {
+      throw new Error('Only activePromptPolicy="redo_active" is supported.');
+    }
+    return triggerArrayRunReloadResume("manual_refresh", {
+      initialImageRetryCount: 0
+    });
+  }
+
   async function waitForDownloadButtonVisibleWithRetry(previousButtons, retryPrompts, options) {
     const retryPromptQueue = normalizeRetryPrompts(retryPrompts);
-    let retryCount = 0;
     const waitOptions =
       options && typeof options === "object"
         ? options
         : {
             assistantTurnCount: 0
           };
+    let retryCount = Number.isFinite(waitOptions.initialRetryCount)
+      ? Math.max(0, Math.trunc(waitOptions.initialRetryCount))
+      : 0;
     const originalPrompt =
       waitOptions && waitOptions.originalPrompt !== undefined && waitOptions.originalPrompt !== null
         ? String(waitOptions.originalPrompt)
@@ -3481,9 +3768,28 @@
             retryStepCount: retryPromptQueue.length,
             imageExpected: retryStep.image_expected_p,
             isMagicRetry: isMagicRetryPrompt(retryPrompt),
+            isMagicRefreshRetry: isMagicRefreshRetryPrompt(retryPrompt),
             promptIndex,
             assistantTurnCount: waitOptions.assistantTurnCount
           });
+          if (isMagicRefreshRetryPrompt(retryPrompt)) {
+            console.warn(
+              `${
+                refusalDetected
+                  ? "Detected an image refusal."
+                  : imageGenerationFailedUiDetected
+                    ? `Detected latest assistant "Image generation failed" UI after exhausting ${IMAGE_RETRY_BUTTON_COUNT} in-turn "Try again" click${
+                        IMAGE_RETRY_BUTTON_COUNT === 1 ? "" : "s"
+                      }.`
+                    : "Timed out waiting for a generated image."
+              } Running retry step ${nextRetryNumber}/${retryPromptQueue.length}: MAGIC_REFRESH_RETRY.`
+            );
+            setArrayRunPhase(arrayRunController, ARRAY_RUN_PHASES.RETRYING_PROMPT);
+            await triggerArrayRunReloadResume("magic_refresh_retry", {
+              initialImageRetryCount: nextRetryNumber
+            });
+            return;
+          }
           if (isMagicRetryPrompt(retryPrompt)) {
             console.warn(
               `${
@@ -3700,6 +4006,10 @@
       options && (options.imageRetryPrompts ?? options.retryPrompts) !== undefined
         ? options.imageRetryPrompts ?? options.retryPrompts
         : undefined;
+    const initialImageRetryCount =
+      options && Number.isFinite(options.initialImageRetryCount)
+        ? Math.max(0, Math.trunc(options.initialImageRetryCount))
+        : 0;
 
     if (useNewChat) {
       console.log("Waiting for generated image...");
@@ -3708,7 +4018,8 @@
         originalPrompt,
         arrayRunController,
         outputTarget,
-        promptIndex
+        promptIndex,
+        initialRetryCount: initialImageRetryCount
       });
       const newButtons = waitResult.buttons;
       const clickedCount = await clickDownloadButtons(newButtons, undefined, {
@@ -3858,7 +4169,7 @@
   //   of the recovery loop, save the failed prompt to a .txt file and continue.
   // - imageRetryPrompts / retryPrompts: override the default image retry queue used by
   //   waitForDownloadButtonVisibleWithRetry in new_chat_image mode. Entries may be raw
-  //   strings / MAGIC_RETRY or objects like { prompt, image_expected_p }.
+  //   strings / MAGIC_RETRY / MAGIC_REFRESH_RETRY or objects like { prompt, image_expected_p }.
   function normalizeArrayOutputArguments(pickOutputDirOrOptions, maybeLegacyPickOutputDir, options) {
     if (
       isPlainObject(pickOutputDirOrOptions) &&
@@ -4128,102 +4439,122 @@
     return segments.join(", ");
   }
 
-  async function sendMessageRepeatedlyArray(
-    msgs,
-    sleep,
-    sep,
-    prefix,
-    postfix,
-    selection,
-    mode,
-    pickOutputDirOrOptions,
-    maybeLegacyPickOutputDir,
-    options
-  ) {
-    const sleepSeconds = sleep ?? 30;
+  async function resolveArrayRunOutputTarget(config) {
+    if (!config.useNewChat || !Array.isArray(config.selectedEntries) || config.selectedEntries.length === 0) {
+      return null;
+    }
+    if (config.pickOutputDir && config.outputDirectoryHandle) {
+      try {
+        return await createPickedOutputTargetFromHandle(config.outputDirectoryHandle);
+      } catch (error) {
+        console.warn(`[resume] Could not reuse saved output folder: ${formatErrorForLog(error)}. Asking again.`);
+      }
+    }
+    return resolveOutputTarget(Boolean(config.pickOutputDir));
+  }
+
+  async function runPreparedArrayRun(config, resumeOptions) {
+    const selectedEntries = Array.isArray(config.selectedEntries)
+      ? config.selectedEntries.map((entry) => ({
+          absoluteIndex: entry.absoluteIndex,
+          message: String(entry.message ?? ""),
+          fullPrompt:
+            entry.fullPrompt !== undefined
+              ? String(entry.fullPrompt)
+              : `${config.prefixText || ""}${entry.message ?? ""}${config.postfixText || ""}`
+        }))
+      : [];
+    const sleepSeconds = config.sleepSeconds ?? 30;
     const sleepDuration = sleepSeconds * 1000;
-    const separator = sep ?? "\n";
-    const prefixText = prefix ?? "";
-    const postfixText = postfix ?? "";
-    const normalizedCallArgs = normalizeArraySelectionCallArguments(
-      selection,
-      mode,
-      pickOutputDirOrOptions,
-      maybeLegacyPickOutputDir,
-      options
-    );
-    const sendMode = normalizeSendMode(normalizedCallArgs.mode);
+    const sendMode = normalizeSendMode(config.sendMode);
     const useNewChat = sendMode === SEND_MODES.NEW_CHAT_IMAGE;
-    const normalizedArgs = normalizeArrayOutputArguments(
-      normalizedCallArgs.pickOutputDirOrOptions,
-      normalizedCallArgs.maybeLegacyPickOutputDir,
-      normalizedCallArgs.options
-    );
+    const options = isPlainObject(config.options) ? config.options : undefined;
     const continueOnImageDownloadTimeout = Boolean(
-      useNewChat && normalizedArgs.options && normalizedArgs.options.continueOnImageDownloadTimeout
+      useNewChat && options && options.continueOnImageDownloadTimeout
     );
     const imageRetryPrompts =
-      useNewChat && normalizedArgs.options
-        ? normalizedArgs.options.imageRetryPrompts ?? normalizedArgs.options.retryPrompts
-        : undefined;
+      useNewChat && options ? options.imageRetryPrompts ?? options.retryPrompts : undefined;
+    const startSelectedEntryIndex = Math.max(
+      0,
+      Math.min(
+        selectedEntries.length,
+        Math.trunc(Number(resumeOptions && resumeOptions.startSelectedEntryIndex) || 0)
+      )
+    );
+    const initialImageRetryCount =
+      resumeOptions && Number.isFinite(resumeOptions.initialImageRetryCount)
+        ? Math.max(0, Math.trunc(resumeOptions.initialImageRetryCount))
+        : 0;
+    const isAutoResume = Boolean(resumeOptions && resumeOptions.isAutoResume);
 
-    const { messages, skippedCount } = normalizeMessageBatch(msgs, separator, normalizedArgs.options);
-    if (skippedCount > 0) {
-      console.log(
-        `Skipped ${skippedCount} whitespace-only prompt${skippedCount === 1 ? "" : "s"} while loading.`
-      );
-    }
-
-    if (messages.length === 0) {
-      console.log("No messages to send.");
+    if (selectedEntries.length === 0 || startSelectedEntryIndex >= selectedEntries.length) {
+      console.log("[resume] No remaining selected prompts to send.");
+      await discardArrayRunResumeRecord();
       return;
     }
-
-    const selectedIndices = normalizeArraySelection(normalizedCallArgs.selection, messages.length);
-    if (selectedIndices.length === 0) {
-      console.log(
-        `No messages to send for selection ${describeArraySelection(normalizedCallArgs.selection)}.`
-      );
-      return;
-    }
-
-    const selectedEntries = selectedIndices.map((absoluteIndex) => ({
-      absoluteIndex,
-      message: messages[absoluteIndex]
-    }));
     if (activeArrayRunController && activeArrayRunController.active) {
       throw new Error("An array prompt run is already active; cannot start another skippable array run.");
     }
-    const outputTarget =
-      useNewChat && selectedEntries.length > 0
-        ? await resolveOutputTarget(normalizedArgs.pickOutputDir)
-        : null;
+    const outputTarget = await resolveArrayRunOutputTarget({
+      ...config,
+      selectedEntries,
+      sendMode,
+      useNewChat
+    });
+    const runConfig = {
+      ...config,
+      selectedEntries,
+      sleepSeconds,
+      sendMode,
+      useNewChat,
+      outputDirectoryHandle:
+        outputTarget && outputTarget.directoryHandle
+          ? outputTarget.directoryHandle
+          : config.outputDirectoryHandle || null,
+      options
+    };
 
     const arrayRunController = createArrayRunController({
       useNewChat,
       totalSelected: selectedEntries.length
     });
+    arrayRunController.resumeEnabled = true;
+    arrayRunController.runConfig = runConfig;
+    arrayRunController.selectedEntryIndex = startSelectedEntryIndex;
     activeArrayRunController = arrayRunController;
 
     try {
+      await saveArrayRunResumeCheckpoint(runConfig, arrayRunController, {
+        reason: isAutoResume ? "auto_resume_started" : "array_run_started",
+        selectedEntryIndex: startSelectedEntryIndex,
+        currentPromptSent: false,
+        initialImageRetryCount
+      });
       if (useNewChat && selectedEntries.length > 0) {
-        const firstEntry = selectedEntries[0];
-        setArrayRunPhase(arrayRunController, ARRAY_RUN_PHASES.OPENING_NEW_CHAT_BEFORE_START);
-        console.log("[new_chat_image] Opening a fresh chat before starting the array run.");
+        const firstEntry = selectedEntries[startSelectedEntryIndex];
+        const phase = startSelectedEntryIndex === 0 && !isAutoResume
+          ? ARRAY_RUN_PHASES.OPENING_NEW_CHAT_BEFORE_START
+          : ARRAY_RUN_PHASES.OPENING_NEW_CHAT_FOR_RETRY;
+        setArrayRunPhase(arrayRunController, phase);
+        console.log(
+          isAutoResume
+            ? "[resume] Opening a fresh chat before redoing the active prompt after reload."
+            : "[new_chat_image] Opening a fresh chat before starting the array run."
+        );
         await openNewChat({
           arrayRunController,
-          phase: ARRAY_RUN_PHASES.OPENING_NEW_CHAT_BEFORE_START,
+          phase,
           outputTarget,
-          promptText: firstEntry.message,
+          promptText: firstEntry.fullPrompt,
           promptIndex: firstEntry.absoluteIndex
         });
       }
 
-      for (let i = 0; i < selectedEntries.length; i++) {
+      for (let i = startSelectedEntryIndex; i < selectedEntries.length; i++) {
         const entry = selectedEntries[i];
         const absoluteIndex = entry.absoluteIndex;
         const selectionPosition = i + 1;
-        const fullPrompt = `${prefixText}${entry.message}${postfixText}`;
+        const fullPrompt = entry.fullPrompt;
         const hasNextPrompt = i < selectedEntries.length - 1;
         const previousButtons = useNewChat ? captureDownloadTargetKeys() : undefined;
         const previousAssistantTurnCount = useNewChat ? getAssistantTurnElements().length : 0;
@@ -4233,7 +4564,14 @@
           absoluteIndex
         );
 
+        arrayRunController.selectedEntryIndex = i;
         setArrayRunCurrentPrompt(arrayRunController, absoluteIndex, fullPrompt);
+        await saveArrayRunResumeCheckpoint(runConfig, arrayRunController, {
+          reason: "prompt_started",
+          selectedEntryIndex: i,
+          currentPromptSent: false,
+          initialImageRetryCount: i === startSelectedEntryIndex ? initialImageRetryCount : 0
+        });
 
         try {
           await sendMessage(fullPrompt, undefined, undefined, undefined, {
@@ -4245,6 +4583,12 @@
             previousAssistantTurnCount: previousAssistantTurnCount
           });
           markArrayRunCurrentPromptSent(arrayRunController);
+          await saveArrayRunResumeCheckpoint(runConfig, arrayRunController, {
+            reason: "prompt_sent",
+            selectedEntryIndex: i,
+            currentPromptSent: true,
+            initialImageRetryCount: i === startSelectedEntryIndex ? initialImageRetryCount : 0
+          });
           console.log(`Message sent (${progressLabel}).`);
 
           await handlePostSend(
@@ -4266,14 +4610,29 @@
                 ? (downloadIndex) =>
                     downloadIndex === 0 ? `${absoluteIndex}` : `${absoluteIndex}_${downloadIndex}`
                 : undefined,
-              imageRetryPrompts
+              imageRetryPrompts,
+              initialImageRetryCount: i === startSelectedEntryIndex ? initialImageRetryCount : 0
             }
           );
+          arrayRunController.selectedEntryIndex = i + 1;
+          await saveArrayRunResumeCheckpoint(runConfig, arrayRunController, {
+            reason: "prompt_completed",
+            selectedEntryIndex: i + 1,
+            currentPromptSent: false,
+            initialImageRetryCount: 0
+          });
         } catch (error) {
           if (isSkipCurrentPromptError(error)) {
             await handleSkippedCurrentArrayPrompt(arrayRunController, {
               hasNextPrompt,
               useNewChat
+            });
+            arrayRunController.selectedEntryIndex = i + 1;
+            await saveArrayRunResumeCheckpoint(runConfig, arrayRunController, {
+              reason: "prompt_skipped",
+              selectedEntryIndex: i + 1,
+              currentPromptSent: false,
+              initialImageRetryCount: 0
             });
             continue;
           }
@@ -4309,13 +4668,90 @@
               arrayRunController
             );
           }
+          arrayRunController.selectedEntryIndex = i + 1;
+          await saveArrayRunResumeCheckpoint(runConfig, arrayRunController, {
+            reason: "prompt_failed_and_continued",
+            selectedEntryIndex: i + 1,
+            currentPromptSent: false,
+            initialImageRetryCount: 0
+          });
         } finally {
           clearArrayRunCurrentPrompt(arrayRunController);
         }
       }
+      await discardArrayRunResumeRecord();
     } finally {
       finalizeArrayRunController(arrayRunController);
     }
+  }
+
+  async function sendMessageRepeatedlyArray(
+    msgs,
+    sleep,
+    sep,
+    prefix,
+    postfix,
+    selection,
+    mode,
+    pickOutputDirOrOptions,
+    maybeLegacyPickOutputDir,
+    options
+  ) {
+    const sleepSeconds = sleep ?? 30;
+    const separator = sep ?? "\n";
+    const prefixText = prefix ?? "";
+    const postfixText = postfix ?? "";
+    const normalizedCallArgs = normalizeArraySelectionCallArguments(
+      selection,
+      mode,
+      pickOutputDirOrOptions,
+      maybeLegacyPickOutputDir,
+      options
+    );
+    const sendMode = normalizeSendMode(normalizedCallArgs.mode);
+    const useNewChat = sendMode === SEND_MODES.NEW_CHAT_IMAGE;
+    const normalizedArgs = normalizeArrayOutputArguments(
+      normalizedCallArgs.pickOutputDirOrOptions,
+      normalizedCallArgs.maybeLegacyPickOutputDir,
+      normalizedCallArgs.options
+    );
+
+    const { messages, skippedCount } = normalizeMessageBatch(msgs, separator, normalizedArgs.options);
+    if (skippedCount > 0) {
+      console.log(
+        `Skipped ${skippedCount} whitespace-only prompt${skippedCount === 1 ? "" : "s"} while loading.`
+      );
+    }
+
+    if (messages.length === 0) {
+      console.log("No messages to send.");
+      return;
+    }
+
+    const selectedIndices = normalizeArraySelection(normalizedCallArgs.selection, messages.length);
+    if (selectedIndices.length === 0) {
+      console.log(
+        `No messages to send for selection ${describeArraySelection(normalizedCallArgs.selection)}.`
+      );
+      return;
+    }
+
+    const selectedEntries = selectedIndices.map((absoluteIndex) => ({
+      absoluteIndex,
+      message: messages[absoluteIndex],
+      fullPrompt: `${prefixText}${messages[absoluteIndex]}${postfixText}`
+    }));
+
+    await runPreparedArrayRun({
+      selectedEntries,
+      sleepSeconds,
+      prefixText,
+      postfixText,
+      sendMode,
+      useNewChat,
+      pickOutputDir: normalizedArgs.pickOutputDir,
+      options: normalizedArgs.options
+    });
   }
 
   async function chooseFileAsText() {
@@ -4477,6 +4913,43 @@
     });
   }
 
+  async function autoResumeArrayRunOnStartup() {
+    if (arrayRunAutoResumeStarted) {
+      return;
+    }
+
+    const record = await readArrayRunResumeRecord();
+    if (!record || record.status !== "pending" || !record.runConfig) {
+      return;
+    }
+
+    arrayRunAutoResumeStarted = true;
+    const selectedEntryIndex = Number.isFinite(record.selectedEntryIndex)
+      ? Math.max(0, Math.trunc(record.selectedEntryIndex))
+      : 0;
+    const initialImageRetryCount = Number.isFinite(record.initialImageRetryCount)
+      ? Math.max(0, Math.trunc(record.initialImageRetryCount))
+      : 0;
+    console.warn("[resume] Found saved array-run state. Auto-resuming after page load.", {
+      reason: record.reason || "",
+      selectedEntryIndex,
+      currentAbsoluteIndex: record.currentAbsoluteIndex,
+      initialImageRetryCount,
+      savedAt: record.updatedAt ? new Date(record.updatedAt).toISOString() : null
+    });
+
+    try {
+      await runPreparedArrayRun(record.runConfig, {
+        isAutoResume: true,
+        startSelectedEntryIndex: selectedEntryIndex,
+        initialImageRetryCount
+      });
+    } catch (error) {
+      console.error(`[resume] Auto-resume failed: ${formatErrorForLog(error)}`, error);
+      arrayRunAutoResumeStarted = false;
+    }
+  }
+
   // Export helpers so they are callable from devtools console.
   window.delay = sleepForMs;
   window.sleepForMs = sleepForMs;
@@ -4491,9 +4964,15 @@
   window.sendMessageRepeatedlyArray = sendMessageRepeatedlyArray;
   window.sendMessageRepeatedlyArrayChooseFile = sendMessageRepeatedlyArrayChooseFile;
   window.skipCurrentPrompt = requestSkipCurrentPrompt;
+  window.refreshPageAndResume = refreshPageAndResume;
+  window.reloadAndResume = refreshPageAndResume;
+  window.getArrayRunResumeState = getArrayRunResumeState;
+  window.clearArrayRunResumeState = clearArrayRunResumeState;
   window.clickDallEDownloadButtons = clickDallEDownloadButtons;
   window.waitForImageGenerationLimitReset = waitForImageGenerationLimitReset;
   window.MAGIC_RETRY = MAGIC_RETRY_PROMPT;
+  window.MAGIC_REFRESH_RETRY = MAGIC_REFRESH_RETRY_PROMPT;
+  window.MAGIC_REFRESH_RETRY_PROMPT = MAGIC_REFRESH_RETRY_PROMPT;
 
   // Keep these globals so this call style works in console:
   // sendMessageRepeatedly("Thanks, continue.", n=2, sleep=60,)
@@ -4529,4 +5008,5 @@
   console.log(
     '[userscript] Ready. Example: sendMessageRepeatedly("Thanks, continue.", n=2, sleep=60,)'
   );
+  autoResumeArrayRunOnStartup();
 })();
