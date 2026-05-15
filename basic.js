@@ -1,14 +1,14 @@
 // ==UserScript==
 // @name         ChatGPT Message Helper
 // @namespace    https://chatgpt.com/
-// @version      1.1.56
+// @version      1.1.57
 // @description  Reliable message sending helpers for ChatGPT web UI changes.
 // @match        https://chatgpt.com/*
 // @grant        none
 // ==/UserScript==
 
 (function () {
-  const USERSCRIPT_VERSION = "1.1.56";
+  const USERSCRIPT_VERSION = "1.1.57";
   const IMAGE_DOWNLOAD_TIMEOUT_SECONDS = 500;
   const IMAGE_DOWNLOAD_TIMEOUT_ERROR_MESSAGE = "Timed out waiting for a new visible generated image.";
   const IMAGE_RETRY_BUTTON_COUNT = 3;
@@ -347,6 +347,7 @@
       phase: ARRAY_RUN_PHASES.IDLE,
       skipRequested: false,
       skipRequestedAt: null,
+      refreshBeforeNextNewChat: false,
       currentAbsoluteIndex: null,
       currentPrompt: "",
       currentPromptSent: false
@@ -1105,6 +1106,32 @@
         : "";
     const promptIndex =
       options && Number.isFinite(options.promptIndex) ? options.promptIndex : null;
+    if (
+      isActiveArrayRunController(arrayRunController) &&
+      arrayRunController.refreshBeforeNextNewChat
+    ) {
+      arrayRunController.refreshBeforeNextNewChat = false;
+      const selectedEntryIndex =
+        options && Number.isFinite(options.refreshNextSelectedEntryIndex)
+          ? options.refreshNextSelectedEntryIndex
+          : arrayRunController.selectedEntryIndex;
+      const currentPromptSent =
+        options && typeof options === "object" && "refreshNextCurrentPromptSent" in options
+          ? Boolean(options.refreshNextCurrentPromptSent)
+          : Boolean(arrayRunController.currentPromptSent);
+      console.warn("[refresh-next] Refreshing before the next new-chat action.", {
+        phase,
+        promptIndex,
+        selectedEntryIndex,
+        currentPromptSent
+      });
+      await triggerArrayRunReloadResume("refresh_next_before_new_chat", {
+        selectedEntryIndex,
+        currentPromptSent,
+        initialImageRetryCount: 0
+      });
+      return;
+    }
     const previousState = captureChatSurfaceState();
     if (
       await verifyFreshChatReady(previousState, {
@@ -1216,6 +1243,36 @@
         );
       }
     }
+  }
+
+  function refreshNext() {
+    const controller = activeArrayRunController;
+    if (!isActiveArrayRunController(controller) || !controller.resumeEnabled) {
+      console.log("[refresh-next] No active resumable array run is available.");
+      return {
+        ok: false,
+        reason: "no_active_resumable_array_run"
+      };
+    }
+
+    if (!controller.useNewChat) {
+      console.log("[refresh-next] The active array run is not using new_chat_image mode.");
+      return {
+        ok: false,
+        reason: "active_run_not_new_chat_image"
+      };
+    }
+
+    controller.refreshBeforeNextNewChat = true;
+    console.warn("[refresh-next] Will refresh with #auto_resume before the next new-chat action.", {
+      selectedEntryIndex: controller.selectedEntryIndex,
+      phase: controller.phase
+    });
+    return {
+      ok: true,
+      selectedEntryIndex: controller.selectedEntryIndex,
+      phase: controller.phase
+    };
   }
 
   function requestSkipCurrentPrompt() {
@@ -3882,10 +3939,14 @@
     const selectedEntryIndex = Number.isFinite(details && details.selectedEntryIndex)
       ? details.selectedEntryIndex
       : controller.selectedEntryIndex;
+    const currentPromptSent =
+      details && typeof details === "object" && "currentPromptSent" in details
+        ? Boolean(details.currentPromptSent)
+        : Boolean(controller.currentPromptSent);
     await saveArrayRunResumeCheckpoint(controller.runConfig, controller, {
       reason,
       selectedEntryIndex,
-      currentPromptSent: Boolean(controller.currentPromptSent),
+      currentPromptSent,
       initialImageRetryCount:
         details && Number.isFinite(details.initialImageRetryCount)
           ? details.initialImageRetryCount
@@ -4263,7 +4324,9 @@
           phase: ARRAY_RUN_PHASES.OPENING_NEW_CHAT_AFTER_SUCCESS,
           outputTarget,
           promptText: originalPrompt,
-          promptIndex
+          promptIndex,
+          refreshNextSelectedEntryIndex: index + 1,
+          refreshNextCurrentPromptSent: false
         });
         await waitForNextPromptTransition(
           sleepDuration > 0 ? sleepDuration : 1200,
@@ -4301,7 +4364,12 @@
       await openNewChat({
         arrayRunController: controller,
         phase: ARRAY_RUN_PHASES.OPENING_NEW_CHAT_AFTER_SKIP,
-        promptIndex: currentAbsoluteIndex
+        promptIndex: currentAbsoluteIndex,
+        refreshNextSelectedEntryIndex:
+          options && Number.isFinite(options.nextSelectedEntryIndex)
+            ? options.nextSelectedEntryIndex
+            : controller.selectedEntryIndex,
+        refreshNextCurrentPromptSent: false
       });
     }
   }
@@ -4843,7 +4911,8 @@
           if (isSkipCurrentPromptError(error)) {
             await handleSkippedCurrentArrayPrompt(arrayRunController, {
               hasNextPrompt,
-              useNewChat
+              useNewChat,
+              nextSelectedEntryIndex: i + 1
             });
             arrayRunController.selectedEntryIndex = i + 1;
             await saveArrayRunResumeCheckpoint(runConfig, arrayRunController, {
@@ -4879,7 +4948,9 @@
               phase: ARRAY_RUN_PHASES.OPENING_NEW_CHAT_AFTER_SKIP,
               outputTarget,
               promptText: fullPrompt,
-              promptIndex: absoluteIndex
+              promptIndex: absoluteIndex,
+              refreshNextSelectedEntryIndex: i + 1,
+              refreshNextCurrentPromptSent: false
             });
             await waitForNextPromptTransition(
               sleepDuration > 0 ? sleepDuration : 1200,
@@ -5258,6 +5329,7 @@
   window.sendMessageRepeatedlyArray = sendMessageRepeatedlyArray;
   window.sendMessageRepeatedlyArrayChooseFile = sendMessageRepeatedlyArrayChooseFile;
   window.skipCurrentPrompt = requestSkipCurrentPrompt;
+  window.refreshNext = refreshNext;
   window.chatResume = chatResume;
   window.refreshPageAndResume = refreshPageAndResume;
   window.reloadAndResume = refreshPageAndResume;

@@ -15,6 +15,9 @@ auto-resume is gated by the tab-local `#auto_resume` URL hash.
   regardless of whether the URL currently has `#auto_resume`.
 - `refreshPageAndResume()` / `reloadAndResume()`: save the active array run,
   add `#auto_resume`, reload the page, then auto-resume after injection.
+- `refreshNext()`: during an active `new_chat_image` array run, queue a refresh
+  before the next fresh-chat action. The runner saves state, adds `#auto_resume`,
+  reloads, and then resumes from that fresh-chat step.
 - `getArrayRunResumeState()`: inspect the saved resume record.
 - `clearArrayRunResumeState()`: delete the saved resume record and prevent
   auto-resume.
@@ -33,6 +36,10 @@ auto-resume is gated by the tab-local `#auto_resume` URL hash.
 - Active array runs add `#auto_resume` to the current tab so manual refreshes of
   that tab resume automatically. Normal completion and state-clearing helpers
   remove the hash.
+- `refreshNext()` is deferred. It does not reload immediately; it reloads when the
+  run is about to call `openNewChat(...)` next. After a successful prompt, that
+  checkpoint points at the next selected prompt rather than redoing the completed
+  one.
 - Completed runs clear their resume record.
 - `MAGIC_REFRESH_RETRY` is marked consumed before reload. If the post-reload
   attempt also fails, the retry loop continues with the next retry prompt instead

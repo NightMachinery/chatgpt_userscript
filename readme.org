@@ -29,6 +29,7 @@ The script exposes helpers on =window=:
 - =isSendButtonReady()=
 - =isComposerReady()=
 - =skipCurrentPrompt()=
+- =refreshNext()=
 - =chatResume()=
 - =refreshPageAndResume()= / =reloadAndResume()=
 - =getArrayRunResumeState()=
@@ -47,6 +48,7 @@ sendMessageRepeatedlyArrayChooseFile(sleep=10, sep="\n", prefix="", postfix="", 
 sendMessageRepeatedlyArrayChooseFile(sleep=10, sep="\n", prefix="", postfix="", selection="4..10, 12, 20..", mode="new_chat_image", pick_output_dir=true);
 sendMessageRepeatedlyArrayChooseFile(sleep=10, sep="\n", prefix="", postfix="", selection=[4, 5, 6, 12, -1], mode="new_chat_image", { imageRetryPrompts: [MAGIC_REFRESH_RETRY, MAGIC_RETRY, { prompt: "First rewrite the prompt and put it in a markdown code block.", image_expected_p: false }, "Generate using the new safe prompt!"] });
 skipCurrentPrompt();
+refreshNext();
 chatResume();
 refreshPageAndResume();
 getArrayRunResumeState();
@@ -66,6 +68,7 @@ isComposerReady();
 - =mode="new_chat_image"= always opens a fresh chat before the first prompt, then waits for visible generated images. Once the first new generated image target is detected, the script keeps actively rescanning for more targets until the composer is ready, then waits =IMAGE_POST_DETECTION_SETTLE_MS= (default: =5= seconds) and rescans once more before downloading. This keeps early image targets captured while avoiding a long fixed post-detection delay. If the latest assistant turn shows the current =Image generation failed= UI with an enabled in-turn =Try again= button, the script clicks that button automatically up to =IMAGE_RETRY_BUTTON_COUNT= times before falling back to the main retry queue. If the latest assistant reply is instead a recognizable refusal and the composer is ready again, it immediately runs the next retry step instead of waiting out the full image timeout. Otherwise, on each timeout it runs the next retry step (by default: =MAGIC_RETRY=, then the creative-license guidance, then =Generate!=). If the retry queue is exhausted, the image timeout bubbles out as before; only UI/page-level recovery loops keep retrying automatically.
 - Once a generated image is visible, the downloader retries that same image forever with backoff (=1s → 2s → 4s ... capped at 60s=) and a per-attempt fetch timeout of 45 seconds; it re-resolves the current tile/asset URL on every retry instead of regenerating a new image.
 - =skipCurrentPrompt()= works during active array runs only (=sendMessageRepeatedlyArray(...)= / =sendMessageRepeatedlyArrayChooseFile(...)=). It cooperatively skips the current prompt at the next safe checkpoint and advances to the next selected prompt.
+- =refreshNext()= works during active =new_chat_image= array runs only. It queues a page refresh before the next =openNewChat()= action, saving resume state and adding =#auto_resume= so the newly loaded page continues from that next fresh-chat step.
 - If =skipCurrentPrompt()= is used while a generated image is stuck in download-retry, the script saves a small diagnostic text file (prompt, prompt index, image index, asset URL, last error, retry count) before advancing.
 - =MAGIC_RETRY= means: open a new chat and resend the original image prompt.
 - =MAGIC_REFRESH_RETRY= means: save the active array-run state to IndexedDB, add =#auto_resume= to the current tab URL, reload the ChatGPT page, then let the newly injected userscript auto-resume by opening a fresh chat and resending the active image prompt. The refresh retry step is marked consumed before reload so a post-reload failure advances to the next retry step instead of refreshing forever.

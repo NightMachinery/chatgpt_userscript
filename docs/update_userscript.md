@@ -14,6 +14,7 @@ Keep these APIs working:
   - Also accepts an options object in the final slot (or instead of `pick_output_dir`) for behaviors like `imageRetryPrompts`.
 - `openNewChat()`
 - `skipCurrentPrompt()`
+- `refreshNext()`
 - `chatResume()`
 - `refreshPageAndResume()` / `reloadAndResume()`
 - `getArrayRunResumeState()`
@@ -233,6 +234,7 @@ Current behavior:
 - in `new_chat_image` mode, if the skipped prompt was already sent, the runner opens a fresh new chat before continuing
 - if the skip happens during repeated generated-image download retries, the script first saves a diagnostic text file containing the prompt, prompt index, image index, target key, last asset URL, last error, and retry count
 - if the UI gets wedged during new-chat/send recovery, use `skipCurrentPrompt()` as the manual escape hatch; the script now prefers infinite recovery loops over failing the batch
+- `refreshNext()` can be called during an active resumable `new_chat_image` array run to refresh with `#auto_resume` immediately before the next `openNewChat(...)` action; after a successful prompt it checkpoints the next selected prompt before reloading
 
 ## Smoke Test Snippet
 
