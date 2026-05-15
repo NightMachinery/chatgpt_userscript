@@ -1,20 +1,20 @@
 // ==UserScript==
 // @name         ChatGPT Message Helper
 // @namespace    https://chatgpt.com/
-// @version      1.1.55
+// @version      1.1.56
 // @description  Reliable message sending helpers for ChatGPT web UI changes.
 // @match        https://chatgpt.com/*
 // @grant        none
 // ==/UserScript==
 
 (function () {
-  const USERSCRIPT_VERSION = "1.1.54";
+  const USERSCRIPT_VERSION = "1.1.56";
   const IMAGE_DOWNLOAD_TIMEOUT_SECONDS = 500;
   const IMAGE_DOWNLOAD_TIMEOUT_ERROR_MESSAGE = "Timed out waiting for a new visible generated image.";
   const IMAGE_RETRY_BUTTON_COUNT = 3;
   const IMAGE_RETRY_PROMPT_SEND_SLEEP_MS = 10000;
   const ENABLE_IMAGE_REFUSAL_FAST_RETRY = true;
-  const IMAGE_POST_DETECTION_SETTLE_MS = 90000;
+  const IMAGE_POST_DETECTION_SETTLE_MS = 5000;
   const GENERATED_IMAGE_TARGET_SELECTORS = Object.freeze([
     '[id^="image-"]',
     '.group\\/imagegen-image'
@@ -1840,6 +1840,28 @@
     });
   }
 
+  function appendUniqueDownloadButtons(targets, candidates, seenKeys, seenElements) {
+    let addedCount = 0;
+    for (const candidate of candidates) {
+      if (!(candidate instanceof Element) || seenElements.has(candidate)) {
+        continue;
+      }
+
+      const key = getDownloadTargetKey(candidate);
+      if (key && seenKeys.has(key)) {
+        continue;
+      }
+
+      seenElements.add(candidate);
+      if (key) {
+        seenKeys.add(key);
+      }
+      targets.push(candidate);
+      addedCount += 1;
+    }
+    return addedCount;
+  }
+
   async function waitForDownloadButtonVisible(checkInterval, timeout, previousButtons, options) {
     const intervalMs = checkInterval ?? 300;
     const timeoutSeconds = timeout ?? IMAGE_DOWNLOAD_TIMEOUT_SECONDS;
@@ -1854,43 +1876,66 @@
     let trackedPreviousButtons = previousButtons;
     let deadline = Date.now() + timeoutMs;
     let imageRetryButtonClickCount = 0;
+    const detectedButtons = [];
+    const seenDownloadTargetKeys = new Set();
+    const seenDownloadButtonElements = new Set();
+    let composerReadySince = null;
 
-    while (Date.now() < deadline) {
+    while (true) {
       setArrayRunPhase(arrayRunController, ARRAY_RUN_PHASES.WAITING_GENERATED_IMAGE);
       throwIfSkipCurrentPromptRequested(arrayRunController, ARRAY_RUN_PHASES.WAITING_GENERATED_IMAGE);
       const buttons = getNewDownloadButtons(trackedPreviousButtons);
       if (buttons.length > 0) {
-        console.log(
-          `[image-detect] Found ${buttons.length} generated image${
-            buttons.length === 1 ? "" : "s"
-          }; waiting ${formatDurationForLog(IMAGE_POST_DETECTION_SETTLE_MS)} before downloading.`
+        const addedCount = appendUniqueDownloadButtons(
+          detectedButtons,
+          buttons,
+          seenDownloadTargetKeys,
+          seenDownloadButtonElements
         );
-        await sleepForMs(IMAGE_POST_DETECTION_SETTLE_MS, {
+
+        if (addedCount > 0) {
+          console.log(
+            `[image-detect] Found ${detectedButtons.length} generated image${
+              detectedButtons.length === 1 ? "" : "s"
+            }; continuing active detection until composer readiness plus ${formatDurationForLog(
+              IMAGE_POST_DETECTION_SETTLE_MS
+            )}.`
+          );
+        }
+      }
+
+      if (detectedButtons.length > 0) {
+        if (isComposerReadyForInput()) {
+          if (composerReadySince === null) {
+            composerReadySince = Date.now();
+            console.log(
+              `[image-detect] Composer ready; settling generated image detection for ${formatDurationForLog(
+                IMAGE_POST_DETECTION_SETTLE_MS
+              )}.`
+            );
+          }
+          if (Date.now() - composerReadySince >= IMAGE_POST_DETECTION_SETTLE_MS) {
+            const latestButtons = getNewDownloadButtons(trackedPreviousButtons);
+            const addedCount = appendUniqueDownloadButtons(
+              detectedButtons,
+              latestButtons,
+              seenDownloadTargetKeys,
+              seenDownloadButtonElements
+            );
+            if (addedCount > 0) {
+              console.log(`[image-detect] Found ${detectedButtons.length} generated images after settle wait.`);
+            }
+            return detectedButtons;
+          }
+        } else {
+          composerReadySince = null;
+        }
+
+        await sleepForMs(intervalMs, {
           arrayRunController,
           phase: ARRAY_RUN_PHASES.WAITING_GENERATED_IMAGE
         });
-        const settledButtons = getNewDownloadButtons(trackedPreviousButtons);
-        const combinedButtons = [];
-        const seenKeys = new Set();
-        const seenElements = new Set();
-        for (const candidate of [...buttons, ...settledButtons]) {
-          if (!(candidate instanceof Element) || seenElements.has(candidate)) {
-            continue;
-          }
-          const key = getDownloadTargetKey(candidate);
-          if (key && seenKeys.has(key)) {
-            continue;
-          }
-          seenElements.add(candidate);
-          if (key) {
-            seenKeys.add(key);
-          }
-          combinedButtons.push(candidate);
-        }
-        if (combinedButtons.length > buttons.length) {
-          console.log(`[image-detect] Found ${combinedButtons.length} generated images after settle wait.`);
-        }
-        return combinedButtons;
+        continue;
       }
 
       const imageLimitState = getImageGenerationLimitResetState(waitOptions.assistantTurnCount);
@@ -1960,13 +2005,15 @@
         continue;
       }
 
+      if (Date.now() >= deadline) {
+        throw createImageDownloadTimeoutError();
+      }
+
       await sleepForMs(intervalMs, {
         arrayRunController,
         phase: ARRAY_RUN_PHASES.WAITING_GENERATED_IMAGE
       });
     }
-
-    throw createImageDownloadTimeoutError();
   }
 
   function isImageDownloadTimeoutError(error) {
