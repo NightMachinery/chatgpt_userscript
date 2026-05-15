@@ -146,11 +146,16 @@ Current logic assumes:
 
 - Busy while `button[data-testid="stop-button"]` exists.
 - Ready to send when not busy and send button exists and is enabled.
+- Composer ready when not busy, no visible dialog is blocking, and the composer input is visible.
+- `window.isSendButtonReady()` exposes the stricter send-ready predicate for console checks.
+- `window.isComposerReady()` exposes composer-input readiness and can return true even when the current prompt is blank and the send button remains disabled.
 
 If upstream changes this, update:
 
 - `isBusyGenerating()`
 - `getSendButton()`
+- `isSendButtonReady()`
+- `isComposerReadyForInput()`
 - `waitForButtonAvailable(...)`
 - `resolveVisibleDialog(...)`
 - `openNewChat(...)`

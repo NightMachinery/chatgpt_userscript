@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         ChatGPT Message Helper
 // @namespace    https://chatgpt.com/
-// @version      1.1.54
+// @version      1.1.55
 // @description  Reliable message sending helpers for ChatGPT web UI changes.
 // @match        https://chatgpt.com/*
 // @grant        none
@@ -839,6 +839,18 @@
         includeHidden: false
       }).find((button) => /^send$/i.test(getElementActionLabel(button))) || null
     );
+  }
+
+  function isSendButtonReady() {
+    if (isBusyGenerating()) {
+      return false;
+    }
+    if (getVisibleDialogElements().length > 0) {
+      return false;
+    }
+
+    const sendButton = getSendButton();
+    return Boolean(sendButton && !isElementDisabled(sendButton));
   }
 
   function findNewChatControl() {
@@ -5189,6 +5201,8 @@
   window.fireShortcut = fireShortcut;
   window.sendModes = SEND_MODES;
   window.promptSet = promptSet;
+  window.isSendButtonReady = isSendButtonReady;
+  window.isComposerReady = isComposerReadyForInput;
   window.clickRegenerate = clickRegenerate;
   window.clickSendButton = clickSendButton;
   window.openNewChat = openNewChat;
