@@ -1,5 +1,12 @@
 #+TITLE: chatgpt_userscript/todo
 
+* DONE disable_paste_intercept.js: pasting large (eg 0.5mb) text causes website to hang for a few minutes; can we:
+** improve perf
+
+** show progressbar
+
+** be robust in face of slow and unstable network
+
 * DONE basic.js: because we now auto-resume on site load, it's no longer possible to use the site normally in another tab. Can add sth like =#auto_resume= to the URL when we want auto-resume to happen, and also a function =chatResume()= for manual invocation, such that normal opening of the site does not trigger the auto-resume? What suggestions and thoughts do you have?
 
 * DONE _

@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Disable Paste Intercept
 // @namespace    https://github.com/NightMachinery/chatgpt_userscript
-// @version      0.1.0
+// @version      0.2.0
 // @description  Insert pasted text directly into AI chat editors so long text is not converted into a file attachment.
 // @match        https://chatgpt.com/*
 // @match        https://chat.openai.com/*
@@ -16,7 +16,11 @@
 (function () {
   "use strict";
 
-  const USERSCRIPT_VERSION = "0.1.0";
+  const USERSCRIPT_VERSION = "0.2.0";
+  const PASTE_MODE = "chunked"; // "atOnce" | "chunked"
+  const CHUNK_SIZE = 10000;
+  const CHUNK_DELAY = 50;
+
   const EDITABLE_SELECTOR = [
     "textarea",
     "input",
@@ -169,6 +173,73 @@
     insertIntoRichTextEditor(element, text);
   }
 
+  function createProgressBar() {
+    const container = document.createElement("div");
+    container.style.position = "fixed";
+    container.style.top = "0";
+    container.style.left = "0";
+    container.style.width = "100%";
+    container.style.height = "4px";
+    container.style.backgroundColor = "#e0e0e0";
+    container.style.zIndex = "999999";
+    container.style.pointerEvents = "none";
+    
+    const bar = document.createElement("div");
+    bar.style.height = "100%";
+    bar.style.width = "0%";
+    bar.style.backgroundColor = "#4caf50";
+    bar.style.transition = "width 0.1s linear";
+    
+    container.appendChild(bar);
+    document.body.appendChild(container);
+    return { container, bar };
+  }
+
+  function playCompletionSound() {
+    try {
+      const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+      const oscillator = audioCtx.createOscillator();
+      const gainNode = audioCtx.createGain();
+      
+      oscillator.type = "sine";
+      oscillator.frequency.setValueAtTime(880, audioCtx.currentTime); // A5
+      gainNode.gain.setValueAtTime(0.1, audioCtx.currentTime);
+      gainNode.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime + 0.1);
+      
+      oscillator.connect(gainNode);
+      gainNode.connect(audioCtx.destination);
+      
+      oscillator.start();
+      oscillator.stop(audioCtx.currentTime + 0.1);
+    } catch (e) {
+      console.error("Failed to play sound", e);
+    }
+  }
+
+  async function insertPlainTextChunked(element, text) {
+    const startTime = Date.now();
+    const progress = createProgressBar();
+    
+    const numChunks = Math.ceil(text.length / CHUNK_SIZE);
+    
+    for (let i = 0; i < numChunks; i++) {
+      const chunk = text.slice(i * CHUNK_SIZE, (i + 1) * CHUNK_SIZE);
+      
+      insertPlainText(element, chunk);
+      
+      progress.bar.style.width = `${((i + 1) / numChunks) * 100}%`;
+      
+      // Yield to the event loop
+      await new Promise(resolve => setTimeout(resolve, CHUNK_DELAY));
+    }
+    
+    progress.container.remove();
+    
+    if (Date.now() - startTime > 10000) {
+      playCompletionSound();
+    }
+  }
+
   function onPaste(event) {
     const clipboardData = event.clipboardData;
     if (!clipboardData || typeof clipboardData.getData !== "function") {
@@ -187,7 +258,12 @@
 
     event.preventDefault();
     event.stopImmediatePropagation();
-    insertPlainText(editable, text);
+    
+    if (PASTE_MODE === "chunked" && text.length > CHUNK_SIZE) {
+      insertPlainTextChunked(editable, text).catch(console.error);
+    } else {
+      insertPlainText(editable, text);
+    }
   }
 
   window.addEventListener("paste", onPaste, { capture: true });
