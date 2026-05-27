@@ -1,14 +1,14 @@
 // ==UserScript==
 // @name         ChatGPT Message Helper
 // @namespace    https://chatgpt.com/
-// @version      1.1.57
+// @version      1.1.58
 // @description  Reliable message sending helpers for ChatGPT web UI changes.
 // @match        https://chatgpt.com/*
 // @grant        none
 // ==/UserScript==
 
 (function () {
-  const USERSCRIPT_VERSION = "1.1.57";
+  const USERSCRIPT_VERSION = "1.1.58";
   const IMAGE_DOWNLOAD_TIMEOUT_SECONDS = 500;
   const IMAGE_DOWNLOAD_TIMEOUT_ERROR_MESSAGE = "Timed out waiting for a new visible generated image.";
   const IMAGE_RETRY_BUTTON_COUNT = 3;
@@ -120,6 +120,7 @@
   const UI_RECOVERY_HEARTBEAT_MS = 60 * 1000;
   const UI_RECOVERY_POLL_MS = 250;
   const UI_RECOVERY_ACTION_SETTLE_MS = 1200;
+  const UI_RECOVERY_REFRESH_RETRY_AFTER_CYCLES = 10;
   const NEW_CHAT_RECOVERY_TIMEOUT_MS = 60000;
   const NEW_CHAT_POST_OPEN_VERIFICATION_DELAY_MS = 3000;
   const SAFE_DIALOG_CONFIRM_LABEL_PATTERNS = Object.freeze([
@@ -1096,6 +1097,45 @@
     }
   }
 
+  async function refreshAfterUiRecoveryCycles(options) {
+    const arrayRunController = options && options.arrayRunController;
+    if (!isActiveArrayRunController(arrayRunController) || !arrayRunController.resumeEnabled) {
+      if (!(options && options.refreshUnavailableLogged)) {
+        console.warn(
+          `[ui-recovery] Refresh retry after ${UI_RECOVERY_REFRESH_RETRY_AFTER_CYCLES} recovery cycles is unavailable without an active resumable array run. Continuing in-page recovery.`
+        );
+      }
+      return {
+        refreshed: false,
+        refreshUnavailableLogged: true
+      };
+    }
+
+    const recoveryState = options && options.recoveryState ? options.recoveryState : null;
+    const selectedEntryIndex =
+      options && Number.isFinite(options.selectedEntryIndex)
+        ? options.selectedEntryIndex
+        : arrayRunController.selectedEntryIndex;
+    const currentPromptSent =
+      options && typeof options === "object" && "currentPromptSent" in options
+        ? Boolean(options.currentPromptSent)
+        : Boolean(arrayRunController.currentPromptSent);
+
+    console.warn(
+      `[ui-recovery] Reached ${UI_RECOVERY_REFRESH_RETRY_AFTER_CYCLES} recovery cycles; refreshing page and resuming the active array run.`,
+      recoveryState || {}
+    );
+    await triggerArrayRunReloadResume("ui_recovery_refresh_retry", {
+      selectedEntryIndex,
+      currentPromptSent,
+      initialImageRetryCount: 0
+    });
+    return {
+      refreshed: true,
+      refreshUnavailableLogged: false
+    };
+  }
+
   async function openNewChat(options) {
     const arrayRunController = options && options.arrayRunController;
     const phase = options && options.phase;
@@ -1145,6 +1185,7 @@
     let recoveryCount = 0;
     let nextHeartbeatAt = Date.now() + UI_RECOVERY_HEARTBEAT_MS;
     let diagnosticSaved = false;
+    let refreshUnavailableLogged = false;
 
     while (true) {
       const cycleStartedAt = Date.now();
@@ -1241,6 +1282,14 @@
             state: recoveryState
           })
         );
+      }
+      if (recoveryCount >= UI_RECOVERY_REFRESH_RETRY_AFTER_CYCLES) {
+        const refreshResult = await refreshAfterUiRecoveryCycles({
+          arrayRunController,
+          recoveryState,
+          refreshUnavailableLogged
+        });
+        refreshUnavailableLogged = refreshResult.refreshUnavailableLogged;
       }
     }
   }
@@ -3196,6 +3245,7 @@
     let cycleStartedAt = Date.now();
     let nextHeartbeatAt = Date.now() + UI_RECOVERY_HEARTBEAT_MS;
     let diagnosticSaved = false;
+    let refreshUnavailableLogged = false;
 
     while (true) {
       setArrayRunPhase(arrayRunController, phase);
@@ -3277,6 +3327,14 @@
             })
           );
         }
+        if (recoveryCount >= UI_RECOVERY_REFRESH_RETRY_AFTER_CYCLES) {
+          const refreshResult = await refreshAfterUiRecoveryCycles({
+            arrayRunController,
+            recoveryState,
+            refreshUnavailableLogged
+          });
+          refreshUnavailableLogged = refreshResult.refreshUnavailableLogged;
+        }
         await recoverCurrentChatSendability(setMsgFn, {
           arrayRunController,
           phase
@@ -3321,6 +3379,7 @@
     let cycleStartedAt = Date.now();
     let nextHeartbeatAt = Date.now() + UI_RECOVERY_HEARTBEAT_MS;
     let diagnosticSaved = false;
+    let refreshUnavailableLogged = false;
 
     while (true) {
       setArrayRunPhase(arrayRunController, phase);
@@ -3387,6 +3446,14 @@
             })
           );
         }
+        if (recoveryCount >= UI_RECOVERY_REFRESH_RETRY_AFTER_CYCLES) {
+          const refreshResult = await refreshAfterUiRecoveryCycles({
+            arrayRunController,
+            recoveryState,
+            refreshUnavailableLogged
+          });
+          refreshUnavailableLogged = refreshResult.refreshUnavailableLogged;
+        }
         await recoverCurrentChatSendability(async () => {}, {
           arrayRunController,
           phase
@@ -3431,6 +3498,7 @@
     let cycleStartedAt = Date.now();
     let nextHeartbeatAt = Date.now() + UI_RECOVERY_HEARTBEAT_MS;
     let diagnosticSaved = false;
+    let refreshUnavailableLogged = false;
 
     while (true) {
       setArrayRunPhase(arrayRunController, phase);
@@ -3491,6 +3559,14 @@
               state: recoveryState
             })
           );
+        }
+        if (recoveryCount >= UI_RECOVERY_REFRESH_RETRY_AFTER_CYCLES) {
+          const refreshResult = await refreshAfterUiRecoveryCycles({
+            arrayRunController,
+            recoveryState,
+            refreshUnavailableLogged
+          });
+          refreshUnavailableLogged = refreshResult.refreshUnavailableLogged;
         }
         await recoverCurrentChatSendability(async () => {}, {
           arrayRunController,

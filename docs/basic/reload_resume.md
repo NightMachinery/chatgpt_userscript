@@ -25,6 +25,9 @@ auto-resume is gated by the tab-local `#auto_resume` URL hash.
   summary, then clear all saved userscript state.
 - `MAGIC_REFRESH_RETRY`: retry-queue sentinel that saves state, reloads, and
   resumes by redoing the active image prompt in a fresh chat.
+- UI recovery refresh retry: during an active resumable array run, stuck
+  composer/send/new-chat recovery reloads after 10 failed recovery cycles and
+  resumes the active prompt.
 
 ## Resume Behavior
 
@@ -44,6 +47,11 @@ auto-resume is gated by the tab-local `#auto_resume` URL hash.
 - `MAGIC_REFRESH_RETRY` is marked consumed before reload. If the post-reload
   attempt also fails, the retry loop continues with the next retry prompt instead
   of refreshing repeatedly.
+- UI recovery refresh retry is cycle-based, not wall-clock based. After 10
+  failed UI recovery cycles, active resumable array runs save state with reason
+  `ui_recovery_refresh_retry`, add `#auto_resume`, reload, and redo the active
+  prompt. Non-resumable/manual sends do not auto-refresh because the JavaScript
+  stack would be lost.
 - The original console Promise is lost during navigation. Progress continues in
   the newly injected script instance and is visible in the console logs.
 
