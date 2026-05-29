@@ -1,14 +1,14 @@
 // ==UserScript==
 // @name         ChatGPT Message Helper
 // @namespace    https://chatgpt.com/
-// @version      1.1.58
+// @version      1.1.59
 // @description  Reliable message sending helpers for ChatGPT web UI changes.
 // @match        https://chatgpt.com/*
 // @grant        none
 // ==/UserScript==
 
 (function () {
-  const USERSCRIPT_VERSION = "1.1.58";
+  const USERSCRIPT_VERSION = "1.1.59";
   const IMAGE_DOWNLOAD_TIMEOUT_SECONDS = 500;
   const IMAGE_DOWNLOAD_TIMEOUT_ERROR_MESSAGE = "Timed out waiting for a new visible generated image.";
   const IMAGE_RETRY_BUTTON_COUNT = 3;
@@ -68,7 +68,8 @@
   const ARRAY_RUN_RESUME_DB_NAME = "chatgpt-userscript-resume";
   const ARRAY_RUN_RESUME_DB_VERSION = 1;
   const ARRAY_RUN_RESUME_STORE_NAME = "state";
-  const ARRAY_RUN_RESUME_RECORD_KEY = "active-array-run";
+  const ARRAY_RUN_RESUME_LEGACY_RECORD_KEY = "active-array-run";
+  const ARRAY_RUN_RESUME_RECORD_KEY_PREFIX = "active-array-run:";
   const AUTO_RESUME_HASH_TOKEN = "auto_resume";
   const DEFAULT_IMAGE_RETRY_PROMPTS = Object.freeze([
     MAGIC_RETRY_PROMPT,
@@ -157,8 +158,82 @@
       .filter(Boolean);
   }
 
+  function normalizeResumeJobId(jobId) {
+    const normalized = String(jobId ?? "").trim();
+    return normalized.length > 0 ? normalized : null;
+  }
+
+  function createArrayRunResumeJobId() {
+    const timestamp = Date.now().toString(36);
+    const randomPart = Math.random().toString(36).slice(2, 10);
+    return `job-${timestamp}-${randomPart}`;
+  }
+
+  function getArrayRunResumeRecordKey(jobId) {
+    const normalizedJobId = normalizeResumeJobId(jobId);
+    return normalizedJobId
+      ? `${ARRAY_RUN_RESUME_RECORD_KEY_PREFIX}${normalizedJobId}`
+      : ARRAY_RUN_RESUME_LEGACY_RECORD_KEY;
+  }
+
+  function getResumeJobIdFromRecordKey(key) {
+    const rawKey = String(key ?? "");
+    return rawKey.startsWith(ARRAY_RUN_RESUME_RECORD_KEY_PREFIX)
+      ? rawKey.slice(ARRAY_RUN_RESUME_RECORD_KEY_PREFIX.length) || null
+      : null;
+  }
+
+  function parseAutoResumeHashToken(token) {
+    const rawToken = String(token ?? "").trim();
+    if (!rawToken) {
+      return null;
+    }
+
+    const equalsIndex = rawToken.indexOf("=");
+    const tokenName = equalsIndex >= 0 ? rawToken.slice(0, equalsIndex) : rawToken;
+    if (tokenName.toLowerCase() !== AUTO_RESUME_HASH_TOKEN) {
+      return null;
+    }
+
+    if (equalsIndex < 0) {
+      return {
+        hasAutoResume: true,
+        jobId: null
+      };
+    }
+
+    const encodedJobId = rawToken.slice(equalsIndex + 1);
+    let decodedJobId = encodedJobId;
+    try {
+      decodedJobId = decodeURIComponent(encodedJobId);
+    } catch (_) {
+      decodedJobId = encodedJobId;
+    }
+    return {
+      hasAutoResume: true,
+      jobId: normalizeResumeJobId(decodedJobId)
+    };
+  }
+
+  function getAutoResumeHashState() {
+    for (const token of getCurrentHashTokens()) {
+      const parsed = parseAutoResumeHashToken(token);
+      if (parsed && parsed.hasAutoResume) {
+        return parsed;
+      }
+    }
+    return {
+      hasAutoResume: false,
+      jobId: null
+    };
+  }
+
   function hasAutoResumeHash() {
-    return getCurrentHashTokens().some((token) => token.toLowerCase() === AUTO_RESUME_HASH_TOKEN);
+    return getAutoResumeHashState().hasAutoResume;
+  }
+
+  function getAutoResumeHashJobId() {
+    return getAutoResumeHashState().jobId;
   }
 
   function replaceCurrentHashTokens(tokens) {
@@ -176,18 +251,18 @@
     }
   }
 
-  function addAutoResumeHash() {
-    const tokens = getCurrentHashTokens();
-    if (!tokens.some((token) => token.toLowerCase() === AUTO_RESUME_HASH_TOKEN)) {
-      tokens.push(AUTO_RESUME_HASH_TOKEN);
-      replaceCurrentHashTokens(tokens);
-    }
+  function addAutoResumeHash(jobId) {
+    const normalizedJobId = normalizeResumeJobId(jobId);
+    const autoResumeToken = normalizedJobId
+      ? `${AUTO_RESUME_HASH_TOKEN}=${encodeURIComponent(normalizedJobId)}`
+      : AUTO_RESUME_HASH_TOKEN;
+    const tokens = getCurrentHashTokens().filter((token) => !parseAutoResumeHashToken(token));
+    tokens.push(autoResumeToken);
+    replaceCurrentHashTokens(tokens);
   }
 
   function removeAutoResumeHash() {
-    const tokens = getCurrentHashTokens().filter(
-      (token) => token.toLowerCase() !== AUTO_RESUME_HASH_TOKEN
-    );
+    const tokens = getCurrentHashTokens().filter((token) => !parseAutoResumeHashToken(token));
     replaceCurrentHashTokens(tokens);
   }
 
@@ -210,13 +285,19 @@
     });
   }
 
-  async function readArrayRunResumeRecord() {
+  async function readArrayRunResumeRecordByKey(recordKey) {
     try {
       const db = await openArrayRunResumeDb();
       return await new Promise((resolve, reject) => {
         const transaction = db.transaction(ARRAY_RUN_RESUME_STORE_NAME, "readonly");
-        const request = transaction.objectStore(ARRAY_RUN_RESUME_STORE_NAME).get(ARRAY_RUN_RESUME_RECORD_KEY);
-        request.onsuccess = () => resolve(request.result || null);
+        const request = transaction.objectStore(ARRAY_RUN_RESUME_STORE_NAME).get(recordKey);
+        request.onsuccess = () => {
+          const record = request.result || null;
+          if (record && recordKey !== ARRAY_RUN_RESUME_LEGACY_RECORD_KEY && !record.resumeJobId) {
+            record.resumeJobId = getResumeJobIdFromRecordKey(recordKey);
+          }
+          resolve(record);
+        };
         request.onerror = () => {
           db.close();
           reject(request.error || new Error("Failed to read resume state."));
@@ -230,9 +311,84 @@
     }
   }
 
+  async function readAllArrayRunResumeRecords() {
+    try {
+      const db = await openArrayRunResumeDb();
+      return await new Promise((resolve, reject) => {
+        const transaction = db.transaction(ARRAY_RUN_RESUME_STORE_NAME, "readonly");
+        const store = transaction.objectStore(ARRAY_RUN_RESUME_STORE_NAME);
+        const request = store.openCursor();
+        const records = [];
+        request.onsuccess = () => {
+          const cursor = request.result;
+          if (!cursor) {
+            resolve(records);
+            return;
+          }
+
+          const record = cursor.value || null;
+          if (record) {
+            const recordKey = cursor.key;
+            const resumeJobId =
+              record.resumeJobId || getResumeJobIdFromRecordKey(recordKey) || null;
+            records.push({
+              ...record,
+              resumeJobId,
+              resumeRecordKey: recordKey
+            });
+          }
+          cursor.continue();
+        };
+        request.onerror = () => {
+          db.close();
+          reject(request.error || new Error("Failed to read saved resume states."));
+        };
+        transaction.oncomplete = () => db.close();
+        transaction.onerror = () => db.close();
+      });
+    } catch (error) {
+      console.warn(`[resume] Failed to read saved resume states: ${formatErrorForLog(error)}`, error);
+      return [];
+    }
+  }
+
+  function findLatestPendingArrayRunResumeRecord(records) {
+    return (Array.isArray(records) ? records : [])
+      .filter((record) => record && record.status === "pending" && record.runConfig)
+      .sort((left, right) => Number(right.updatedAt || 0) - Number(left.updatedAt || 0))[0] || null;
+  }
+
+  async function readLatestArrayRunResumeRecord() {
+    return findLatestPendingArrayRunResumeRecord(await readAllArrayRunResumeRecords());
+  }
+
+  async function readArrayRunResumeRecord(jobId) {
+    const normalizedJobId = normalizeResumeJobId(jobId);
+    if (normalizedJobId) {
+      return readArrayRunResumeRecordByKey(getArrayRunResumeRecordKey(normalizedJobId));
+    }
+    return readLatestArrayRunResumeRecord();
+  }
+
+  async function resolveArrayRunResumeRecord(jobId) {
+    const explicitJobId = normalizeResumeJobId(jobId);
+    if (explicitJobId) {
+      return readArrayRunResumeRecord(explicitJobId);
+    }
+
+    const hashJobId = getAutoResumeHashJobId();
+    if (hashJobId) {
+      return readArrayRunResumeRecord(hashJobId);
+    }
+
+    return readLatestArrayRunResumeRecord();
+  }
+
   async function writeArrayRunResumeRecord(record) {
+    const resumeJobId = normalizeResumeJobId(record && record.resumeJobId) || createArrayRunResumeJobId();
     const safeRecord = {
       ...(record || {}),
+      resumeJobId,
       schemaVersion: 1,
       userscriptVersion: USERSCRIPT_VERSION,
       updatedAt: Date.now()
@@ -241,7 +397,10 @@
     await new Promise((resolve, reject) => {
       const transaction = db.transaction(ARRAY_RUN_RESUME_STORE_NAME, "readwrite");
       try {
-        transaction.objectStore(ARRAY_RUN_RESUME_STORE_NAME).put(safeRecord, ARRAY_RUN_RESUME_RECORD_KEY);
+        transaction.objectStore(ARRAY_RUN_RESUME_STORE_NAME).put(
+          safeRecord,
+          getArrayRunResumeRecordKey(resumeJobId)
+        );
       } catch (error) {
         db.close();
         reject(error);
@@ -263,12 +422,13 @@
     return safeRecord;
   }
 
-  async function deleteArrayRunResumeRecord() {
+  async function deleteArrayRunResumeRecord(jobId) {
+    const recordKey = getArrayRunResumeRecordKey(jobId);
     const db = await openArrayRunResumeDb();
     await new Promise((resolve, reject) => {
       const transaction = db.transaction(ARRAY_RUN_RESUME_STORE_NAME, "readwrite");
       try {
-        transaction.objectStore(ARRAY_RUN_RESUME_STORE_NAME).delete(ARRAY_RUN_RESUME_RECORD_KEY);
+        transaction.objectStore(ARRAY_RUN_RESUME_STORE_NAME).delete(recordKey);
       } catch (error) {
         db.close();
         reject(error);
@@ -315,9 +475,9 @@
     });
   }
 
-  async function discardArrayRunResumeRecord() {
+  async function discardArrayRunResumeRecord(jobId) {
     try {
-      await deleteArrayRunResumeRecord();
+      await deleteArrayRunResumeRecord(jobId);
     } catch (error) {
       console.warn(`[resume] Failed to clear saved resume state: ${formatErrorForLog(error)}`, error);
     }
@@ -340,6 +500,7 @@
   function createArrayRunController({ useNewChat, totalSelected }) {
     return {
       runId: nextArrayRunId++,
+      resumeJobId: null,
       active: true,
       useNewChat: Boolean(useNewChat),
       totalSelected: Number.isFinite(totalSelected) ? totalSelected : 0,
@@ -1313,7 +1474,8 @@
     }
 
     controller.refreshBeforeNextNewChat = true;
-    console.warn("[refresh-next] Will refresh with #auto_resume before the next new-chat action.", {
+    console.warn("[refresh-next] Will refresh with #auto_resume=<job_id> before the next new-chat action.", {
+      resumeJobId: controller.resumeJobId || null,
       selectedEntryIndex: controller.selectedEntryIndex,
       phase: controller.phase
     });
@@ -3862,6 +4024,13 @@
   }
 
   function buildArrayRunResumeRecord(config, controller, details) {
+    const resumeJobId =
+      normalizeResumeJobId(controller && controller.resumeJobId) ||
+      normalizeResumeJobId(details && details.resumeJobId) ||
+      createArrayRunResumeJobId();
+    if (controller) {
+      controller.resumeJobId = resumeJobId;
+    }
     const selectedEntryIndex = Number.isFinite(details && details.selectedEntryIndex)
       ? details.selectedEntryIndex
       : Number.isFinite(controller && controller.selectedEntryIndex)
@@ -3871,6 +4040,7 @@
       ? config.selectedEntries[selectedEntryIndex]
       : null;
     return {
+      resumeJobId,
       status: "pending",
       reason: details && details.reason ? String(details.reason) : "array_run_progress",
       url: String(window.location.href || ""),
@@ -3926,12 +4096,22 @@
     }
   }
 
-  async function clearArrayRunResumeState() {
-    await deleteArrayRunResumeRecord();
-    removeAutoResumeHash();
-    console.log("[resume] Cleared saved array-run resume state.");
+  async function clearArrayRunResumeState(jobId) {
+    const resumeRecord = await resolveArrayRunResumeRecord(jobId);
+    const explicitJobId = normalizeResumeJobId(jobId);
+    const hashJobId = getAutoResumeHashJobId();
+    const resumeJobId =
+      (resumeRecord && resumeRecord.resumeJobId) || explicitJobId || hashJobId || null;
+    await deleteArrayRunResumeRecord(resumeJobId);
+    if (!explicitJobId || !hashJobId || hashJobId === resumeJobId) {
+      removeAutoResumeHash();
+    }
+    console.log("[resume] Cleared saved array-run resume state.", {
+      resumeJobId
+    });
     return {
-      ok: true
+      ok: true,
+      resumeJobId
     };
   }
 
@@ -3963,6 +4143,7 @@
 
     return {
       hasSavedState: true,
+      resumeJobId: record.resumeJobId || null,
       savedReason: record.reason || "",
       savedAt: record.updatedAt ? new Date(record.updatedAt).toISOString() : null,
       lastActivePromptFile:
@@ -3988,7 +4169,7 @@
   }
 
   async function clearState() {
-    const resumeRecord = await readArrayRunResumeRecord();
+    const resumeRecord = await readLatestArrayRunResumeRecord();
     const summary = summarizeSavedStateForLog(resumeRecord);
     console.log("[state] Clearing saved userscript state.", summary);
     await clearArrayRunResumeStore();
@@ -4002,8 +4183,8 @@
     };
   }
 
-  async function getArrayRunResumeState() {
-    return readArrayRunResumeRecord();
+  async function getArrayRunResumeState(jobId) {
+    return resolveArrayRunResumeRecord(jobId);
   }
 
   async function triggerArrayRunReloadResume(reason, details) {
@@ -4019,7 +4200,7 @@
       details && typeof details === "object" && "currentPromptSent" in details
         ? Boolean(details.currentPromptSent)
         : Boolean(controller.currentPromptSent);
-    await saveArrayRunResumeCheckpoint(controller.runConfig, controller, {
+    const resumeRecord = await saveArrayRunResumeCheckpoint(controller.runConfig, controller, {
       reason,
       selectedEntryIndex,
       currentPromptSent,
@@ -4028,7 +4209,7 @@
           ? details.initialImageRetryCount
           : 0
     });
-    addAutoResumeHash();
+    addAutoResumeHash(resumeRecord && resumeRecord.resumeJobId ? resumeRecord.resumeJobId : controller.resumeJobId);
     console.warn(`[resume] Saved array-run state for ${reason}; reloading the page now.`);
     window.location.reload();
     await new Promise(() => {});
@@ -4846,10 +5027,12 @@
         ? Math.max(0, Math.trunc(resumeOptions.initialImageRetryCount))
         : 0;
     const isAutoResume = Boolean(resumeOptions && resumeOptions.isAutoResume);
+    const resumeJobId =
+      normalizeResumeJobId(resumeOptions && resumeOptions.resumeJobId) || createArrayRunResumeJobId();
 
     if (selectedEntries.length === 0 || startSelectedEntryIndex >= selectedEntries.length) {
       console.log("[resume] No remaining selected prompts to send.");
-      await discardArrayRunResumeRecord();
+      await discardArrayRunResumeRecord(resumeJobId);
       removeAutoResumeHash();
       return;
     }
@@ -4879,13 +5062,14 @@
       useNewChat,
       totalSelected: selectedEntries.length
     });
+    arrayRunController.resumeJobId = resumeJobId;
     arrayRunController.resumeEnabled = true;
     arrayRunController.runConfig = runConfig;
     arrayRunController.selectedEntryIndex = startSelectedEntryIndex;
     activeArrayRunController = arrayRunController;
 
     try {
-      addAutoResumeHash();
+      addAutoResumeHash(arrayRunController.resumeJobId);
       await saveArrayRunResumeCheckpoint(runConfig, arrayRunController, {
         reason: isAutoResume ? "auto_resume_started" : "array_run_started",
         selectedEntryIndex: startSelectedEntryIndex,
@@ -5044,7 +5228,7 @@
           clearArrayRunCurrentPrompt(arrayRunController);
         }
       }
-      await discardArrayRunResumeRecord();
+      await discardArrayRunResumeRecord(arrayRunController.resumeJobId);
       removeAutoResumeHash();
     } finally {
       finalizeArrayRunController(arrayRunController);
@@ -5324,6 +5508,7 @@
       : 0;
     console.warn("[resume] Found saved array-run state. Resuming now.", {
       resumeSource: resumeSource || "unknown",
+      resumeJobId: record.resumeJobId || null,
       reason: record.reason || "",
       selectedEntryIndex,
       currentAbsoluteIndex: record.currentAbsoluteIndex,
@@ -5334,9 +5519,13 @@
     try {
       await runPreparedArrayRun(record.runConfig, {
         isAutoResume: true,
+        resumeJobId: record.resumeJobId || null,
         startSelectedEntryIndex: selectedEntryIndex,
         initialImageRetryCount
       });
+      if (!record.resumeJobId && record.resumeRecordKey === ARRAY_RUN_RESUME_LEGACY_RECORD_KEY) {
+        await discardArrayRunResumeRecord();
+      }
       return {
         ok: true
       };
@@ -5347,12 +5536,12 @@
     }
   }
 
-  async function chatResume() {
+  async function chatResume(jobId) {
     if (activeArrayRunController && activeArrayRunController.active) {
       throw new Error("An array prompt run is already active; cannot resume another run.");
     }
 
-    const record = await readArrayRunResumeRecord();
+    const record = await resolveArrayRunResumeRecord(jobId);
     if (!record || record.status !== "pending" || !record.runConfig) {
       console.log("[resume] No pending array-run state to resume.");
       return {
@@ -5361,23 +5550,26 @@
       };
     }
 
-    addAutoResumeHash();
+    addAutoResumeHash(record.resumeJobId || null);
     return resumeArrayRunFromRecord(record, "manual_chat_resume");
   }
 
   async function autoResumeArrayRunOnStartup() {
-    const record = await readArrayRunResumeRecord();
+    const autoResumeHashState = getAutoResumeHashState();
+    const record = autoResumeHashState.hasAutoResume
+      ? await resolveArrayRunResumeRecord(autoResumeHashState.jobId)
+      : await readLatestArrayRunResumeRecord();
     if (!record || record.status !== "pending" || !record.runConfig) {
-      if (hasAutoResumeHash()) {
+      if (autoResumeHashState.hasAutoResume) {
         removeAutoResumeHash();
       }
       return;
     }
 
-    if (!hasAutoResumeHash()) {
+    if (!autoResumeHashState.hasAutoResume) {
       console.warn(
-        "[resume] Saved array-run state exists, but this tab does not have #auto_resume. " +
-          "Not auto-resuming; call chatResume() to resume manually."
+        "[resume] Saved array-run state exists, but this tab does not have #auto_resume=<job_id>. " +
+          "Not auto-resuming; call chatResume(job_id) to resume manually."
       );
       return;
     }

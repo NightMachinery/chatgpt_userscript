@@ -15,10 +15,10 @@ Keep these APIs working:
 - `openNewChat()`
 - `skipCurrentPrompt()`
 - `refreshNext()`
-- `chatResume()`
+- `chatResume(job_id?)`
 - `refreshPageAndResume()` / `reloadAndResume()`
-- `getArrayRunResumeState()`
-- `clearArrayRunResumeState()`
+- `getArrayRunResumeState(job_id?)`
+- `clearArrayRunResumeState(job_id?)`
 - `clearState()`
 - `clickDallEDownloadButtons(pick_output_dir)`
 
@@ -184,7 +184,7 @@ When `mode === "new_chat_image"` in repeated send helpers, current flow is:
 7. otherwise, if the image wait times out, run the next retry step
 8. retry steps can be normal prompts or the special sentinels `MAGIC_RETRY` / `MAGIC_REFRESH_RETRY`
 9. `MAGIC_RETRY` means: open a new chat and resend the original prompt
-10. `MAGIC_REFRESH_RETRY` means: save active array-run state to IndexedDB, add `#auto_resume`, reload the page, and let startup auto-resume by opening a fresh chat and resending the active prompt
+10. `MAGIC_REFRESH_RETRY` means: save active array-run state to IndexedDB, add `#auto_resume=<job_id>`, reload the page, and let startup auto-resume by opening a fresh chat and resending the active prompt
 11. normal retry prompt sends wait `IMAGE_RETRY_PROMPT_SEND_SLEEP_MS` (default 10 seconds) once the send button is ready before clicking send
 12. the default retry queue is `MAGIC_RETRY`, then the creative-license guidance prompt, then `"Generate!"`
 13. fetch the generated image asset URL(s) directly from the visible image tile(s) and trigger downloads
@@ -234,7 +234,7 @@ Current behavior:
 - in `new_chat_image` mode, if the skipped prompt was already sent, the runner opens a fresh new chat before continuing
 - if the skip happens during repeated generated-image download retries, the script first saves a diagnostic text file containing the prompt, prompt index, image index, target key, last asset URL, last error, and retry count
 - if the UI gets wedged during new-chat/send recovery, use `skipCurrentPrompt()` as the manual escape hatch; the script now prefers infinite recovery loops over failing the batch
-- `refreshNext()` can be called during an active resumable `new_chat_image` array run to refresh with `#auto_resume` immediately before the next `openNewChat(...)` action; after a successful prompt it checkpoints the next selected prompt before reloading
+- `refreshNext()` can be called during an active resumable `new_chat_image` array run to refresh with `#auto_resume=<job_id>` immediately before the next `openNewChat(...)` action; after a successful prompt it checkpoints the next selected prompt before reloading
 
 ## Smoke Test Snippet
 
