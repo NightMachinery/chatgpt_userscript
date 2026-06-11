@@ -1,14 +1,14 @@
 // ==UserScript==
 // @name         ChatGPT Message Helper
 // @namespace    https://chatgpt.com/
-// @version      1.1.59
+// @version      1.1.60
 // @description  Reliable message sending helpers for ChatGPT web UI changes.
 // @match        https://chatgpt.com/*
 // @grant        none
 // ==/UserScript==
 
 (function () {
-  const USERSCRIPT_VERSION = "1.1.59";
+  const USERSCRIPT_VERSION = "1.1.60";
   const IMAGE_DOWNLOAD_TIMEOUT_SECONDS = 500;
   const IMAGE_DOWNLOAD_TIMEOUT_ERROR_MESSAGE = "Timed out waiting for a new visible generated image.";
   const IMAGE_RETRY_BUTTON_COUNT = 3;
@@ -236,7 +236,32 @@
     return getAutoResumeHashState().jobId;
   }
 
-  function replaceCurrentHashTokens(tokens) {
+  function replaceCurrentUrl(url) {
+    try {
+      window.history.replaceState(window.history.state, document.title, url.href);
+      return true;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  function removePromptQueryParamFromUrl(url) {
+    if (!(url instanceof URL) || !url.searchParams.has("prompt")) {
+      return false;
+    }
+    url.searchParams.delete("prompt");
+    return true;
+  }
+
+  function removeCurrentPromptQueryParam() {
+    const url = new URL(window.location.href);
+    if (!removePromptQueryParamFromUrl(url)) {
+      return false;
+    }
+    return replaceCurrentUrl(url);
+  }
+
+  function replaceCurrentHashTokens(tokens, options) {
     const normalizedTokens = Array.from(new Set(
       (Array.isArray(tokens) ? tokens : [])
         .map((token) => String(token || "").trim())
@@ -244,9 +269,10 @@
     ));
     const url = new URL(window.location.href);
     url.hash = normalizedTokens.length > 0 ? normalizedTokens.join("&") : "";
-    try {
-      window.history.replaceState(window.history.state, document.title, url.href);
-    } catch (_) {
+    if (options && options.removePromptQuery) {
+      removePromptQueryParamFromUrl(url);
+    }
+    if (!replaceCurrentUrl(url)) {
       window.location.hash = url.hash;
     }
   }
@@ -258,7 +284,9 @@
       : AUTO_RESUME_HASH_TOKEN;
     const tokens = getCurrentHashTokens().filter((token) => !parseAutoResumeHashToken(token));
     tokens.push(autoResumeToken);
-    replaceCurrentHashTokens(tokens);
+    replaceCurrentHashTokens(tokens, {
+      removePromptQuery: true
+    });
   }
 
   function removeAutoResumeHash() {
@@ -5556,6 +5584,9 @@
 
   async function autoResumeArrayRunOnStartup() {
     const autoResumeHashState = getAutoResumeHashState();
+    if (autoResumeHashState.hasAutoResume) {
+      removeCurrentPromptQueryParam();
+    }
     const record = autoResumeHashState.hasAutoResume
       ? await resolveArrayRunResumeRecord(autoResumeHashState.jobId)
       : await readLatestArrayRunResumeRecord();

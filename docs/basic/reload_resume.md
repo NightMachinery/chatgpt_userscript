@@ -41,6 +41,9 @@ tab-local `#auto_resume=<job_id>` URL hash.
   refreshes of that tab resume the matching job automatically. Bare
   `#auto_resume` and no-argument helpers use the current URL job ID when present,
   otherwise the most recently updated pending job.
+- Resume refresh URLs remove ChatGPT's `prompt` query parameter before reload
+  while preserving other query parameters and the `#auto_resume` hash. This
+  keeps very long prompt-prefill URLs from being requested again during recovery.
 - `refreshNext()` is deferred. It does not reload immediately; it reloads when the
   run is about to call `openNewChat(...)` next. After a successful prompt, that
   checkpoint points at the next selected prompt rather than redoing the completed
