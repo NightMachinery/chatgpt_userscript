@@ -9,6 +9,7 @@
 // @match        https://gemini.google.com/*
 // @match        https://perplexity.ai/*
 // @match        https://www.perplexity.ai/*
+// @match        https://www.kimi.com/*
 // @grant        none
 // @run-at       document-start
 // ==/UserScript==
