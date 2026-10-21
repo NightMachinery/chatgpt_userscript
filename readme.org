@@ -10,6 +10,10 @@ that prevents long plain-text pastes from being intercepted and converted into
 file attachments. It inserts clipboard =text/plain= directly into the focused
 editor.
 
+=chat_shortcuts.user.js= gives ChatGPT, Claude, Gemini, Perplexity, and Kimi
+consistent Mac shortcuts: =Cmd+K= starts a new chat; =Cmd+Shift+O= and =Cmd+S=
+open chat search.
+
 * Install
 1. Install a userscript manager (Tampermonkey/Violentmonkey).
 2. Create a new script and paste =basic.js=.
@@ -18,6 +22,10 @@ editor.
 To disable long-paste file conversion, create a second userscript and paste
 =disable_paste_intercept.js=. It currently targets ChatGPT, Claude, Gemini, and
 Perplexity.
+
+For the shortcut swap, install =chat_shortcuts.user.js= as a separate userscript,
+then reload your chat tabs. It works independently of the other scripts.
+See [[file:docs/keyboard-shortcuts.md][Keyboard shortcuts]] for site coverage and troubleshooting.
 
 * Quick use (browser console)
 The script exposes helpers on =window=:
