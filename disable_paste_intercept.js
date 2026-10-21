@@ -1,275 +1,466 @@
 // ==UserScript==
-// @name         Disable Paste Intercept
-// @namespace    https://github.com/NightMachinery/chatgpt_userscript
-// @version      0.2.0
-// @description  Insert pasted text directly into AI chat editors so long text is not converted into a file attachment.
+// @name         ChatGPT Fast Exact Plain-Text Paste
+// @namespace    chatgpt-fast-exact-paste
+// @version      1.0.0
+// @description  Fast long-text paste for ChatGPT. Prevents attachment conversion and preserves exact line breaks as plain text.
 // @match        https://chatgpt.com/*
 // @match        https://chat.openai.com/*
-// @match        https://claude.ai/*
-// @match        https://gemini.google.com/*
-// @match        https://perplexity.ai/*
-// @match        https://www.perplexity.ai/*
-// @match        https://www.kimi.com/*
 // @grant        none
 // @run-at       document-start
 // ==/UserScript==
 
-(function () {
-  "use strict";
+(() => {
+    "use strict";
 
-  const USERSCRIPT_VERSION = "0.2.0";
-  const PASTE_MODE = "chunked"; // "atOnce" | "chunked"
-  const CHUNK_SIZE = 10000;
-  const CHUNK_DELAY = 50;
+    /*
+     * ============================================================
+     * Configuration
+     * ============================================================
+     */
 
-  const EDITABLE_SELECTOR = [
-    "textarea",
-    "input",
-    '[contenteditable="true"]',
-    '[role="textbox"]'
-  ].join(",");
-  const TEXT_INPUT_TYPE_PATTERN = /^(text|search|url|tel|password|email|number)$/i;
+    // 只干预较长文本。
+    // 短文本继续交给 ChatGPT 原生处理。
+    const LONG_TEXT_THRESHOLD = 8000;
 
-  function isVisibleElement(element) {
-    if (!element || !(element instanceof Element)) {
-      return false;
+    /*
+     * true:
+     *   所有超过阈值的纯文本粘贴都由本脚本处理。
+     *
+     * false:
+     *   可以自行进一步限制。
+     */
+    const ENABLE_LONG_TEXT_INTERCEPT = true;
+
+
+    /*
+     * ChatGPT composer selectors.
+     */
+    const COMPOSER_SELECTOR = [
+        '#prompt-textarea[contenteditable="true"]',
+        '#prompt-textarea[contenteditable="plaintext-only"]',
+        '.ProseMirror[contenteditable="true"][role="textbox"]',
+        '[contenteditable="true"][data-virtualkeyboard="true"]'
+    ].join(",");
+
+
+    /*
+     * ============================================================
+     * Clipboard helpers
+     * ============================================================
+     */
+
+    function clipboardHasFile(data) {
+        if (!data) {
+            return false;
+        }
+
+        if (data.files && data.files.length > 0) {
+            return true;
+        }
+
+        if (data.items) {
+            for (const item of data.items) {
+                if (item.kind === "file") {
+                    return true;
+                }
+            }
+        }
+
+        return false;
     }
-    const style = window.getComputedStyle(element);
-    const rect = element.getBoundingClientRect();
-    return (
-      style.display !== "none" &&
-      style.visibility !== "hidden" &&
-      rect.width > 0 &&
-      rect.height > 0
+
+
+    function findComposer(target) {
+        if (!(target instanceof Element)) {
+            return null;
+        }
+
+        return target.closest(COMPOSER_SELECTOR);
+    }
+
+
+    /*
+     * ============================================================
+     * Text normalization
+     * ============================================================
+     *
+     * Windows:
+     *   \r\n
+     *
+     * Old Mac:
+     *   \r
+     *
+     * Unix:
+     *   \n
+     *
+     * 全部统一成 \n。
+     *
+     * 注意：
+     * 这不会改变行数。
+     * 它只是统一换行符编码。
+     */
+
+    function normalizeNewlines(text) {
+        return text.replace(/\r\n?/g, "\n");
+    }
+
+
+    /*
+     * ============================================================
+     * Build exact plain-text fragment
+     * ============================================================
+     *
+     * 关键：
+     *
+     * 不使用 innerHTML 拼接用户内容。
+     * 不解析 Markdown。
+     * 不创建 <p>。
+     *
+     * 每一行都是普通 TextNode。
+     * 每一个 \n 都对应一个明确的 <br>。
+     *
+     *
+     * 输入：
+     *
+     *   A\nB\n\nD
+     *
+     *
+     * DOM：
+     *
+     *   Text("A")
+     *   <br>
+     *   Text("B")
+     *   <br>
+     *   <br>
+     *   Text("D")
+     *
+     *
+     * 因而：
+     *
+     *   一个 newline = 一个换行
+     *   两个 newline = 两个换行
+     *
+     * 不依赖浏览器猜测。
+     */
+
+    function buildPlainTextFragment(text) {
+        const fragment = document.createDocumentFragment();
+
+        const normalized = normalizeNewlines(text);
+        const lines = normalized.split("\n");
+
+        for (let i = 0; i < lines.length; i++) {
+
+            /*
+             * 即便这一行为空，也不要删除。
+             *
+             * 空行由相邻的 <br> 保留下来。
+             */
+            if (lines[i].length > 0) {
+                fragment.appendChild(
+                    document.createTextNode(lines[i])
+                );
+            }
+
+            /*
+             * 最后一行后面只有原文本确实存在 newline
+             * 才会出现对应 <br>。
+             *
+             * split("\n") 会自然保留 trailing empty item。
+             */
+            if (i < lines.length - 1) {
+                fragment.appendChild(
+                    document.createElement("br")
+                );
+            }
+        }
+
+        return fragment;
+    }
+
+
+    /*
+     * ============================================================
+     * Selection helpers
+     * ============================================================
+     */
+
+    function selectionBelongsToEditor(selection, editor) {
+        if (
+            !selection ||
+            selection.rangeCount === 0
+        ) {
+            return false;
+        }
+
+        const range = selection.getRangeAt(0);
+
+        return (
+            editor === range.commonAncestorContainer ||
+            editor.contains(range.commonAncestorContainer)
+        );
+    }
+
+
+    function createRangeAtEnd(editor) {
+        const range = document.createRange();
+
+        range.selectNodeContents(editor);
+        range.collapse(false);
+
+        return range;
+    }
+
+
+    /*
+     * ============================================================
+     * One-shot insertion
+     * ============================================================
+     */
+
+    function insertExactPlainText(editor, text) {
+        editor.focus({
+            preventScroll: true
+        });
+
+
+        let selection = window.getSelection();
+
+        if (!selection) {
+            return false;
+        }
+
+
+        let range;
+
+        if (
+            selectionBelongsToEditor(
+                selection,
+                editor
+            )
+        ) {
+
+            range = selection.getRangeAt(0);
+
+        } else {
+
+            /*
+             * 找不到有效 caret 时，
+             * 插到输入框末尾。
+             */
+            range = createRangeAtEnd(editor);
+
+            selection.removeAllRanges();
+            selection.addRange(range);
+        }
+
+
+        /*
+         * 替换当前选中的内容。
+         */
+        if (!range.collapsed) {
+            range.deleteContents();
+        }
+
+
+        /*
+         * 一次创建整个 fragment。
+         *
+         * 注意：
+         *
+         * 我们不是：
+         *
+         *   插一行
+         *   event
+         *   插一行
+         *   event
+         *   ...
+         *
+         * 而是：
+         *
+         *   构造 fragment
+         *          ↓
+         *   一次 insertNode()
+         *
+         * 浏览器只需要完成一次主要 DOM 插入。
+         */
+        const fragment =
+            buildPlainTextFragment(text);
+
+
+        /*
+         * 为了恢复 caret，
+         * 放一个临时 marker。
+         */
+        const marker =
+            document.createTextNode("");
+
+        fragment.appendChild(marker);
+
+
+        /*
+         * 一次 DOM 操作。
+         */
+        range.insertNode(fragment);
+
+
+        /*
+         * caret 移到插入内容之后。
+         */
+        const newRange =
+            document.createRange();
+
+        newRange.setStartAfter(marker);
+        newRange.collapse(true);
+
+        selection.removeAllRanges();
+        selection.addRange(newRange);
+
+
+        /*
+         * marker 没有实际文本，可以安全移除。
+         */
+        marker.remove();
+
+
+        /*
+         * ========================================================
+         * 只通知编辑器一次。
+         * ========================================================
+         */
+
+        try {
+            editor.dispatchEvent(
+                new InputEvent("input", {
+                    bubbles: true,
+                    composed: true,
+                    cancelable: false,
+                    inputType: "insertFromPaste",
+                    data: null
+                })
+            );
+        } catch (_) {
+            editor.dispatchEvent(
+                new Event("input", {
+                    bubbles: true,
+                    composed: true
+                })
+            );
+        }
+
+
+        return true;
+    }
+
+
+    /*
+     * ============================================================
+     * Paste handler
+     * ============================================================
+     */
+
+    function handlePaste(event) {
+        if (!ENABLE_LONG_TEXT_INTERCEPT) {
+            return;
+        }
+
+
+        const data = event.clipboardData;
+
+        if (!data) {
+            return;
+        }
+
+
+        /*
+         * 图片 / 截图 / PDF / 文件：
+         *
+         * 完全不碰。
+         *
+         * 继续使用 ChatGPT 原生上传。
+         */
+        if (clipboardHasFile(data)) {
+            return;
+        }
+
+
+        const editor =
+            findComposer(event.target);
+
+        if (!editor) {
+            return;
+        }
+
+
+        const text =
+            data.getData("text/plain");
+
+        if (!text) {
+            return;
+        }
+
+
+        /*
+         * 短文本继续使用官方 paste。
+         */
+        if (text.length < LONG_TEXT_THRESHOLD) {
+            return;
+        }
+
+
+        /*
+         * ========================================================
+         * 阻止 ChatGPT：
+         *
+         *   long text
+         *       ↓
+         *   Pasted text
+         *       ↓
+         *   attachment
+         *
+         * ========================================================
+         */
+
+        event.preventDefault();
+        event.stopImmediatePropagation();
+
+
+        /*
+         * 一次性插入。
+         */
+        insertExactPlainText(
+            editor,
+            text
+        );
+    }
+
+
+    /*
+     * Capture phase：
+     *
+     * 抢在 ChatGPT long-paste handler 前面。
+     */
+    window.addEventListener(
+        "paste",
+        handlePaste,
+        {
+            capture: true,
+            passive: false
+        }
     );
-  }
 
-  function isWritableTextInput(element) {
-    if (!(element instanceof HTMLInputElement)) {
-      return false;
-    }
-    return (
-      TEXT_INPUT_TYPE_PATTERN.test(element.type || "text") &&
-      !element.readOnly &&
-      !element.disabled
+
+    /*
+     * Debug
+     */
+    window.chatgptExactPaste = Object.freeze({
+        version: "1.0.0",
+        threshold: LONG_TEXT_THRESHOLD
+    });
+
+
+    console.log(
+        "[ChatGPT Fast Exact Plain-Text Paste] enabled"
     );
-  }
 
-  function isWritableTextArea(element) {
-    return (
-      element instanceof HTMLTextAreaElement &&
-      !element.readOnly &&
-      !element.disabled
-    );
-  }
-
-  function isWritableRichTextEditor(element) {
-    return (
-      element instanceof HTMLElement &&
-      (
-        element.isContentEditable ||
-        element.getAttribute("contenteditable") === "true" ||
-        element.getAttribute("role") === "textbox"
-      )
-    );
-  }
-
-  function isWritableEditable(element) {
-    return (
-      isWritableTextInput(element) ||
-      isWritableTextArea(element) ||
-      isWritableRichTextEditor(element)
-    );
-  }
-
-  function findVisibleEditorFallback() {
-    return Array.from(document.querySelectorAll(EDITABLE_SELECTOR)).find((element) => (
-      isWritableEditable(element) && isVisibleElement(element)
-    )) || null;
-  }
-
-  function findEditableFromPasteTarget(target) {
-    if (!target || !(target instanceof Element)) {
-      return null;
-    }
-
-    let editable = target.closest(EDITABLE_SELECTOR);
-    if (!editable || !isWritableEditable(editable)) {
-      return null;
-    }
-
-    // Some editors keep a hidden textarea/input as a fallback and proxy focus to a
-    // visible contenteditable surface. Prefer the visible editor when possible.
-    if (!isVisibleElement(editable)) {
-      editable = findVisibleEditorFallback() || editable;
-    }
-
-    return isWritableEditable(editable) ? editable : null;
-  }
-
-  function dispatchInputEvent(element, text) {
-    try {
-      element.dispatchEvent(new InputEvent("input", {
-        bubbles: true,
-        cancelable: false,
-        inputType: "insertFromPaste",
-        data: text
-      }));
-    } catch (_) {
-      element.dispatchEvent(new Event("input", { bubbles: true }));
-    }
-  }
-
-  function insertIntoPlainTextControl(element, text) {
-    element.focus();
-    const value = element.value || "";
-    const start = Number.isFinite(element.selectionStart) ? element.selectionStart : value.length;
-    const end = Number.isFinite(element.selectionEnd) ? element.selectionEnd : start;
-
-    if (typeof element.setRangeText === "function") {
-      element.setRangeText(text, start, end, "end");
-    } else {
-      element.value = `${value.slice(0, start)}${text}${value.slice(end)}`;
-      const cursor = start + text.length;
-      if (typeof element.setSelectionRange === "function") {
-        element.setSelectionRange(cursor, cursor);
-      }
-    }
-    dispatchInputEvent(element, text);
-  }
-
-  function insertIntoRichTextEditor(element, text) {
-    element.focus();
-
-    try {
-      if (document.execCommand("insertText", false, text)) {
-        return;
-      }
-    } catch (_) {
-      // Fall back to DOM Range insertion below.
-    }
-
-    const selection = window.getSelection();
-    if (selection && selection.rangeCount > 0) {
-      selection.deleteFromDocument();
-      const range = selection.getRangeAt(0);
-      const textNode = document.createTextNode(text);
-      range.insertNode(textNode);
-      range.setStartAfter(textNode);
-      range.collapse(true);
-      selection.removeAllRanges();
-      selection.addRange(range);
-    } else {
-      element.appendChild(document.createTextNode(text));
-    }
-
-    dispatchInputEvent(element, text);
-  }
-
-  function insertPlainText(element, text) {
-    if (isWritableTextInput(element) || isWritableTextArea(element)) {
-      insertIntoPlainTextControl(element, text);
-      return;
-    }
-    insertIntoRichTextEditor(element, text);
-  }
-
-  function createProgressBar() {
-    const container = document.createElement("div");
-    container.style.position = "fixed";
-    container.style.top = "0";
-    container.style.left = "0";
-    container.style.width = "100%";
-    container.style.height = "4px";
-    container.style.backgroundColor = "#e0e0e0";
-    container.style.zIndex = "999999";
-    container.style.pointerEvents = "none";
-    
-    const bar = document.createElement("div");
-    bar.style.height = "100%";
-    bar.style.width = "0%";
-    bar.style.backgroundColor = "#4caf50";
-    bar.style.transition = "width 0.1s linear";
-    
-    container.appendChild(bar);
-    document.body.appendChild(container);
-    return { container, bar };
-  }
-
-  function playCompletionSound() {
-    try {
-      const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
-      const oscillator = audioCtx.createOscillator();
-      const gainNode = audioCtx.createGain();
-      
-      oscillator.type = "sine";
-      oscillator.frequency.setValueAtTime(880, audioCtx.currentTime); // A5
-      gainNode.gain.setValueAtTime(0.1, audioCtx.currentTime);
-      gainNode.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime + 0.1);
-      
-      oscillator.connect(gainNode);
-      gainNode.connect(audioCtx.destination);
-      
-      oscillator.start();
-      oscillator.stop(audioCtx.currentTime + 0.1);
-    } catch (e) {
-      console.error("Failed to play sound", e);
-    }
-  }
-
-  async function insertPlainTextChunked(element, text) {
-    const startTime = Date.now();
-    const progress = createProgressBar();
-    
-    const numChunks = Math.ceil(text.length / CHUNK_SIZE);
-    
-    for (let i = 0; i < numChunks; i++) {
-      const chunk = text.slice(i * CHUNK_SIZE, (i + 1) * CHUNK_SIZE);
-      
-      insertPlainText(element, chunk);
-      
-      progress.bar.style.width = `${((i + 1) / numChunks) * 100}%`;
-      
-      // Yield to the event loop
-      await new Promise(resolve => setTimeout(resolve, CHUNK_DELAY));
-    }
-    
-    progress.container.remove();
-    
-    if (Date.now() - startTime > 10000) {
-      playCompletionSound();
-    }
-  }
-
-  function onPaste(event) {
-    const clipboardData = event.clipboardData;
-    if (!clipboardData || typeof clipboardData.getData !== "function") {
-      return;
-    }
-
-    const text = clipboardData.getData("text/plain");
-    if (!text) {
-      return;
-    }
-
-    const editable = findEditableFromPasteTarget(event.target);
-    if (!editable) {
-      return;
-    }
-
-    event.preventDefault();
-    event.stopImmediatePropagation();
-    
-    if (PASTE_MODE === "chunked" && text.length > CHUNK_SIZE) {
-      insertPlainTextChunked(editable, text).catch(console.error);
-    } else {
-      insertPlainText(editable, text);
-    }
-  }
-
-  window.addEventListener("paste", onPaste, { capture: true });
-
-  window.disablePasteIntercept = Object.freeze({
-    version: USERSCRIPT_VERSION
-  });
 })();
