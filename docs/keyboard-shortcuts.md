@@ -58,3 +58,33 @@ exclusion, translated labels, and synthetic-event compatibility.
 
 These checks verify the script's behavior against fixture controls. Signed-in
 production controls on the five services have not been verified live.
+
+## Browser-wide shortcuts in Brave
+
+Browser actions such as native Tab Search and New Tab belong outside this
+userscript. Brave's [built-in shortcut editor](https://support.brave.app/hc/en-us/articles/360032272171-What-keyboard-shortcuts-can-I-use-in-Brave)
+is at `brave://settings/system/shortcuts`. Desired assignments are Cmd+Period
+for Tab Search and Cmd+Slash for New Tab.
+
+The editor is the simplest option, but shortcut assignment alone should not be
+treated as a guarantee against page handlers. Chromium's
+[reserved-command list](https://github.com/chromium/chromium/blob/main/chrome/browser/ui/accelerator_table.cc)
+includes New Tab and excludes Tab Search. Its
+[dispatch logic](https://github.com/chromium/chromium/blob/main/chrome/browser/ui/views/frame/browser_view.cc)
+gives non-reserved browser shortcuts to the page first; fullscreen and app
+windows have additional exceptions. This is a source-based assessment, not a
+live verification of custom bindings in Brave.
+
+For strict priority over page handlers on macOS, prefer Brave-scoped OS hotkeys
+in Hammerspoon, invoking browser menu actions directly with
+[`selectMenuItem`](https://www.hammerspoon.org/docs/hs.application.html#selectMenuItem).
+This avoids sending the original chord, or a replacement chord that the page
+could also intercept. Menu availability and titles must be verified before
+configuring the bindings.
+
+An extension using the standard
+[Commands API](https://developer.chrome.com/docs/extensions/reference/api/commands)
+can register Period, but Slash is absent from its supported key list. A
+content-script listener has page-injection and event-order limitations, and
+the standard Tabs API does not expose an action to open native Tab Search.
+An extension could instead provide its own tab-search popup.
