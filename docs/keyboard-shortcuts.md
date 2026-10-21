@@ -76,11 +76,13 @@ windows have additional exceptions. This is a source-based assessment, not a
 live verification of custom bindings in Brave.
 
 For strict priority over page handlers on macOS, prefer Brave-scoped OS hotkeys
-in Hammerspoon, invoking browser menu actions directly with
-[`selectMenuItem`](https://www.hammerspoon.org/docs/hs.application.html#selectMenuItem).
+in Hammerspoon, invoking native browser controls directly. Use a menu action
+with [`selectMenuItem`](https://www.hammerspoon.org/docs/hs.application.html#selectMenuItem)
+for New Tab, and an accessibility press on the native Tab Search toolbar button
+if no Tab Search menu item exists.
 This avoids sending the original chord, or a replacement chord that the page
-could also intercept. Menu availability and titles must be verified before
-configuring the bindings.
+could also intercept. Native-control availability and labels must be verified
+before configuring the bindings.
 
 An extension using the standard
 [Commands API](https://developer.chrome.com/docs/extensions/reference/api/commands)
